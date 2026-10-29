@@ -35,6 +35,17 @@ object Targets {
      */
     val feedReelWords = listOf("Reel", "Video")
 
+    /** Instagram's bottom tabs, found by ID first and then by their label. */
+    class Tab(val kind: String, val ids: List<String>, val labels: List<String>)
+
+    val igTabs = listOf(
+        Tab("home", listOf("$IG:id/feed_tab"), listOf("Home")),
+        Tab("reels", listOf("$IG:id/clips_tab"), listOf("Reels")),
+        Tab("search", listOf("$IG:id/search_tab"), listOf("Search and explore", "Search", "Explore")),
+        Tab("messages", listOf("$IG:id/direct_tab", "$IG:id/inbox_tab"), listOf("Messages", "Direct", "Messenger")),
+        Tab("profile", listOf("$IG:id/profile_tab"), listOf("Profile")),
+    )
+
     val instagram = AppTargets(
         viewerIds = setOf(
             "$IG:id/clips_viewer_view_pager",

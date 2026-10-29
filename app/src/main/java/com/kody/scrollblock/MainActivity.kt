@@ -80,10 +80,10 @@ class MainActivity : Activity() {
         toggle(Prefs.ENABLED, "Blocking on", true)
 
         section("INSTAGRAM")
-        toggle(Prefs.IG_REELS, "Hide the Reels button + block reel scrolling", true)
-        toggle(Prefs.IG_FEED_REELS, "Cover & mute reels in Home feed and Explore", true)
-        toggle(Prefs.IG_EXPLORE_GRID, "Cover the Explore page (search still works)", true)
-        toggle(Prefs.IG_EXPLORE, "Block Explore completely, search included", false)
+        toggle(Prefs.IG_REELS, "Hide the Reels tab + block reel scrolling", true)
+        toggle(Prefs.IG_EXPLORE, "Hide the Explore tab", true)
+        toggle(Prefs.IG_FEED_REELS, "Cover & mute reels in the Home feed", true)
+        toggle(Prefs.IG_EXPLORE_GRID, "If Explore is allowed: cover its grid (search still works)", false)
 
         section("YOUTUBE")
         toggle(Prefs.YT_SHORTS, "Block Shorts tab + shorts scrolling", true)

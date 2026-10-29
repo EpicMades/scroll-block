@@ -20,7 +20,7 @@ object Prefs {
 
     /** Default value for each on/off setting. */
     fun default(key: String): Boolean = when (key) {
-        IG_EXPLORE, DEBUG -> false
+        IG_EXPLORE_GRID, DEBUG -> false
         else -> true
     }
 

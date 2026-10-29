@@ -36,7 +36,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private lateinit var blur: BlurCover
     private lateinit var exploreCover: BlurCover
     private lateinit var patches: PatchOverlay
-    private lateinit var tabCover: TabCover
+    private lateinit var tabBar: CustomTabBar
     private lateinit var muter: Muter
     private val handler = Handler(Looper.getMainLooper())
 
@@ -95,7 +95,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         blur = BlurCover(this, touchable = false)
         exploreCover = BlurCover(this, touchable = true)
         patches = PatchOverlay(this)
-        tabCover = TabCover(this)
+        tabBar = CustomTabBar(this) { kind -> clickTab(kind) }
         muter = Muter(this)
         loadPrefs()
         prefs.registerOnSharedPreferenceChangeListener(this)
@@ -227,8 +227,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
         if (debug) dump(root, pkg, viewer, onFeedTab, onExplore, onHome, now)
 
-        // Hide the Reels button whenever Instagram's tab bar is showing.
-        if (isIg && igReels) updateTabCover(root, tabBars) else tabCover.hide()
+        // Replace Instagram's tab bar with one that has only the allowed tabs.
+        if (isIg && (igReels || igExplore)) updateTabBar(root, tabBars) else tabBar.hide()
 
         val name = if (isIg) "Reels" else "Shorts"
         var exploreCovered = false
@@ -299,7 +299,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             block("$what is blocked", now)
             return
         }
-        val msg = if (barTop != null) "$what hidden by Scroll Block\nTap a tab below to leave"
+        val msg = if (barTop != null) "$what hidden by Scroll Block\nSwipe or tap a tab to leave"
         else "$what hidden by Scroll Block\nSwipe back to leave"
         val wasShowing = blur.isShowing
         blur.show(Rect(0, 0, screenW, barTop ?: screenH), msg)
@@ -311,7 +311,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     }
 
     private fun anyOverlay() = ::blur.isInitialized &&
-        (blur.isShowing || exploreCover.isShowing || patches.isShowing || tabCover.isShowing)
+        (blur.isShowing || exploreCover.isShowing || patches.isShowing || tabBar.isShowing)
 
     private fun scheduleWatch() {
         handler.removeCallbacks(overlayWatch)
@@ -338,7 +338,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         hideBlur()
         clearPatches()
         exploreCover.hide()
-        tabCover.hide()
+        tabBar.hide()
         muter.clear()
     }
 
@@ -383,23 +383,59 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     // ---- Instagram: Reels button and feed reels ----
 
-    private fun updateTabCover(root: AccessibilityNodeInfo, tabBars: List<AccessibilityNodeInfo>) {
-        val t = Targets.instagram
-        var target: AccessibilityNodeInfo? =
-            t.feedTabIds.flatMap { root.findAccessibilityNodeInfosByViewId(it) }.firstOrNull()
-        if (target == null && t.feedTabLabel != null) {
-            target = tabBars.flatMap { it.findAccessibilityNodeInfosByText(t.feedTabLabel) }
-                .firstOrNull { n ->
-                    n.contentDescription?.toString().equals(t.feedTabLabel, true) ||
-                        n.text?.toString().equals(t.feedTabLabel, true)
-                }
+    private fun allowedTabs(): List<Targets.Tab> = Targets.igTabs.filter { tab ->
+        when (tab.kind) {
+            "reels" -> !igReels
+            "search" -> !igExplore
+            else -> true
         }
-        val node = target
-        if (node == null || !node.isVisibleToUser) { tabCover.hide(); return }
+    }
+
+    private fun findTab(
+        root: AccessibilityNodeInfo, tabBar: AccessibilityNodeInfo?, tab: Targets.Tab,
+    ): AccessibilityNodeInfo? {
+        for (id in tab.ids) {
+            root.findAccessibilityNodeInfosByViewId(id).firstOrNull { it.isVisibleToUser }?.let { return it }
+        }
+        val bar = tabBar ?: return null
+        for (label in tab.labels) {
+            bar.findAccessibilityNodeInfosByText(label).firstOrNull { n ->
+                n.isVisibleToUser && (n.contentDescription?.toString().equals(label, true) ||
+                    n.text?.toString().equals(label, true))
+            }?.let { return it }
+        }
+        return null
+    }
+
+    private fun updateTabBar(root: AccessibilityNodeInfo, tabBars: List<AccessibilityNodeInfo>) {
+        val bar = tabBars.firstOrNull { it.isVisibleToUser }
+        if (bar == null) { tabBar.hide(); return }
         val r = Rect()
-        node.getBoundsInScreen(r)
-        if (r.width() <= 0 || r.height() <= 0) { tabCover.hide(); return }
-        tabCover.show(r)
+        bar.getBoundsInScreen(r)
+        if (r.width() <= 0 || r.height() <= 0) { tabBar.hide(); return }
+
+        // Keep the allowed tabs in Instagram's own left-to-right order.
+        val found = allowedTabs().mapNotNull { tab ->
+            findTab(root, bar, tab)?.let { node ->
+                val b = Rect()
+                node.getBoundsInScreen(b)
+                Triple(tab.kind, b.left, node.isSelected || node.parent?.isSelected == true)
+            }
+        }.sortedBy { it.second }
+        if (found.isEmpty()) { tabBar.hide(); return }
+        val selected = found.firstOrNull { it.third }?.first
+        tabBar.show(r, found.map { it.first }, selected)
+    }
+
+    /** Our tab bar was tapped: tap the matching real Instagram tab. */
+    private fun clickTab(kind: String) {
+        val root = rootInActiveWindow ?: return
+        val tab = Targets.igTabs.firstOrNull { it.kind == kind } ?: return
+        val bar = Targets.instagram.tabBarIds.flatMap { root.findAccessibilityNodeInfosByViewId(it) }.firstOrNull()
+        var node = findTab(root, bar, tab)
+        while (node != null && !node.isClickable) node = node.parent
+        node?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
+        handler.postDelayed({ checkScreen(Targets.IG, SystemClock.uptimeMillis()) }, 150)
     }
 
     private fun findReelRects(root: AccessibilityNodeInfo, screenW: Int, clipBottom: Int): List<Rect> {
