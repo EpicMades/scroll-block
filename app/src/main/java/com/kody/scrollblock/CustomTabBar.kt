@@ -84,7 +84,7 @@ class CustomTabBar(
     private fun night() = (service.resources.configuration.uiMode and
         Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
-    private fun colorKey() = (if (night()) "bar_color_night_v2_" else "bar_color_day_v2_") + app
+    private fun colorKey() = (if (night()) "bar_color_night_v3_" else "bar_color_day_v3_") + app
 
     private fun savedOrDefault(): Int = prefs.getInt(colorKey(), 0).takeIf { it != 0 } ?: fallbackColor()
 
@@ -131,13 +131,14 @@ class CustomTabBar(
     }
 
     /**
-     * Read many points in the gaps between Instagram's tab icons (low in the bar,
-     * away from the top divider) and use the most common color.
+     * Use the app's background color from the top of the screen (status bar / top
+     * bar area), reading many points and taking the most common color.
      */
+    @Suppress("UNUSED_PARAMETER")
     private fun sampleBackground(bmp: Bitmap, r: Rect): Int {
         val counts = HashMap<Int, Int>()
-        val ys = listOf(0.55f, 0.7f, 0.85f).map { (r.top + r.height() * it).toInt() }
-        val xs = (0..10).map { (r.left + r.width() * (it / 10f)).toInt() }
+        val ys = listOf(0.012f, 0.02f, 0.03f).map { (bmp.height * it).toInt() }
+        val xs = (1..19).map { (bmp.width * (it / 20f)).toInt() }
         for (y in ys) for (x in xs) {
             val px = bmp.getPixel(x.coerceIn(0, bmp.width - 1), y.coerceIn(0, bmp.height - 1))
             val c = px or 0xFF000000.toInt()
