@@ -300,6 +300,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }
         if (!exploreCovered) exploreCover.hide()
         if (!homeCovered) homeCover.hide()
+        // Videos keep playing under the Home cover, so keep them silent too.
+        muter.set("home", homeCovered)
         scheduleWatch()
     }
 
