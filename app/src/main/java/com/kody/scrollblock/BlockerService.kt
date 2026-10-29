@@ -48,6 +48,11 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var igExploreGrid = true
     private var igHomeStoriesOnly = true
     private var ytHome = true
+    private var igOpenMessages = true
+    /** Which app was last in front, to spot a fresh open of Instagram. */
+    private var frontPkg: String? = null
+    private var igOpenedAt = 0L
+    private var igLandingHandled = false
     private var lastSnapAt = 0L
     private var ytShorts = true
     private var allowShared = true
@@ -87,14 +92,19 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     /** While anything is drawn on screen, make sure it disappears the moment you leave the app. */
     private val overlayWatch = Runnable {
-        if (!anyOverlay()) return@Runnable
         val pkg = rootInActiveWindow?.packageName?.toString()
         if (pkg == null || Targets.forPackage(pkg) == null) {
+            // Left Instagram/YouTube: remove everything and remember, so the next open is "fresh".
+            frontPkg = pkg
             hideAll()
-        } else {
+        } else if (anyOverlay()) {
             checkScreen(pkg, SystemClock.uptimeMillis())
+        } else {
+            // Nothing drawn: just keep an eye out (slowly) for leaving the app.
+            handler.postDelayed(watchAgain, IDLE_WATCH_MS)
         }
     }
+    private val watchAgain = Runnable { overlayWatch.run() }
 
     override fun onServiceConnected() {
         prefs = Prefs.get(this)
@@ -137,6 +147,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         igExploreGrid = pref(Prefs.IG_EXPLORE_GRID)
         igHomeStoriesOnly = pref(Prefs.IG_HOME_STORIES_ONLY)
         ytHome = pref(Prefs.YT_HOME)
+        igOpenMessages = pref(Prefs.IG_OPEN_MESSAGES)
         ytShorts = pref(Prefs.YT_SHORTS)
         allowShared = pref(Prefs.ALLOW_SHARED)
         blurMode = pref(Prefs.BLUR_MODE)
@@ -240,6 +251,26 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (debug) dump(root, pkg, viewer, onFeedTab, onExplore, onHome, now)
 
         // Replace Instagram's tab bar with one that has only the allowed tabs.
+        // Fresh open of Instagram: go straight to Messages.
+        if (frontPkg != pkg) {
+            frontPkg = pkg
+            if (isIg) { igOpenedAt = now; igLandingHandled = false }
+        }
+        if (isIg && igOpenMessages && !igLandingHandled && now - igOpenedAt < 2500 && !viewer) {
+            val bar = tabBars.firstOrNull { onScreen(it) != null }
+            val msgTab = Targets.igTabs.firstOrNull { it.kind == "messages" }
+            if (bar != null && msgTab != null) {
+                igLandingHandled = true
+                val msgNode = findTab(root, bar, msgTab)
+                val onMessages = msgNode?.isSelected == true || msgNode?.parent?.isSelected == true
+                // Only redirect from the default landing screen (Home), never mid-way through something.
+                if (onHome && !onMessages) {
+                    clickTab("messages", Targets.IG)
+                    return
+                }
+            }
+        }
+
         val customBar = if (isIg) igReels || igExplore else ytShorts
         if (customBar) updateTabBar(pkg, root, tabBars) else tabBar.hide()
 
@@ -356,7 +387,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     private fun scheduleWatch() {
         handler.removeCallbacks(overlayWatch)
-        if (anyOverlay()) handler.postDelayed(overlayWatch, WATCH_INTERVAL_MS)
+        handler.removeCallbacks(watchAgain)
+        handler.postDelayed(overlayWatch, if (anyOverlay()) WATCH_INTERVAL_MS else IDLE_WATCH_MS)
     }
 
     private fun hideBlur() {
@@ -376,6 +408,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun hideAll() {
         if (!::blur.isInitialized) return
         handler.removeCallbacks(overlayWatch)
+        handler.removeCallbacks(watchAgain)
         hideBlur()
         clearPatches()
         exploreCover.hide()
@@ -759,6 +792,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         private const val FAST_INTERVAL_MS = 16L
         private const val FULL_CHECK_MS = 300L
         private const val WATCH_INTERVAL_MS = 150L
+        private const val IDLE_WATCH_MS = 1000L
         private const val FROM_FEED_WINDOW_MS = 3000L
         private const val EVENT_MASK = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or

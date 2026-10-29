@@ -12,6 +12,7 @@ object Prefs {
     const val IG_EXPLORE = "ig_explore_full"
     const val IG_EXPLORE_GRID = "ig_explore_grid"
     const val IG_HOME_STORIES_ONLY = "ig_home_stories_only"
+    const val IG_OPEN_MESSAGES = "ig_open_messages"
     const val YT_SHORTS = "yt_shorts"
     const val YT_HOME = "yt_home_cover"
     const val ALLOW_SHARED = "allow_shared"
