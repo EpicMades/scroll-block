@@ -46,7 +46,11 @@ class CustomTabBar(
 
     val isShowing: Boolean get() = root != null || waiting
 
-    fun show(r: Rect, tabKinds: List<String>, sel: String?) {
+    private var app = ""
+
+    fun show(pkg: String, r: Rect, tabKinds: List<String>, sel: String?) {
+        if (pkg != app && root != null) hide()
+        app = pkg
         val bar = root
         if (bar != null) {
             if (r != rect) {
@@ -80,11 +84,13 @@ class CustomTabBar(
     private fun night() = (service.resources.configuration.uiMode and
         Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
-    private fun colorKey() = if (night()) "bar_color_night_v2" else "bar_color_day_v2"
+    private fun colorKey() = (if (night()) "bar_color_night_v2_" else "bar_color_day_v2_") + app
 
     private fun savedOrDefault(): Int = prefs.getInt(colorKey(), 0).takeIf { it != 0 } ?: fallbackColor()
 
-    private fun fallbackColor() = if (night()) 0xFF0C1014.toInt() else Color.WHITE
+    private fun fallbackColor() = if (night()) {
+        if (app == Targets.YT) 0xFF0F0F0F.toInt() else 0xFF0C1014.toInt()
+    } else Color.WHITE
 
     /** Take one screenshot before our bar exists and read the real bar's background color. */
     private fun sampleThenAdd(r: Rect) {
@@ -247,7 +253,17 @@ class CustomTabBar(
                     canvas.drawCircle(w * 0.43f, h * 0.43f, w * 0.32f, paint)
                     canvas.drawLine(w * 0.67f, h * 0.67f, w * 0.9f - p / 2, h * 0.9f - p / 2, paint)
                 }
-                "profile" -> {
+                "subscriptions" -> { // stacked screens with a play triangle
+                    canvas.drawLine(w * 0.25f, h * 0.12f, w * 0.75f, h * 0.12f, paint)
+                    canvas.drawLine(w * 0.17f, h * 0.24f, w * 0.83f, h * 0.24f, paint)
+                    canvas.drawRoundRect(w * 0.08f, h * 0.36f, w * 0.92f, h * 0.9f, w * 0.08f, w * 0.08f, paint)
+                    path.moveTo(w * 0.43f, h * 0.5f)
+                    path.lineTo(w * 0.62f, h * 0.63f)
+                    path.lineTo(w * 0.43f, h * 0.76f)
+                    path.close()
+                    canvas.drawPath(path, paint)
+                }
+                "profile", "you" -> {
                     canvas.drawCircle(w * 0.5f, h * 0.5f, w * 0.5f - p, paint)
                     canvas.drawCircle(w * 0.5f, h * 0.4f, w * 0.16f, paint)
                     path.moveTo(w * 0.22f, h * 0.82f)

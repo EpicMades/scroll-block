@@ -44,6 +44,15 @@ object Targets {
     /** The "Suggested reels" carousel in the home feed (header + the row of reels). */
     val feedReelRowIds = listOf("$IG:id/clips_header_container", "$IG:id/clips_items_view")
 
+    /** YouTube's bottom tabs, found by their label inside the bottom bar. */
+    val ytTabs = listOf(
+        Targets.Tab("home", emptyList(), listOf("Home")),
+        Targets.Tab("shorts", emptyList(), listOf("Shorts")),
+        Targets.Tab("create", emptyList(), listOf("Create")),
+        Targets.Tab("subscriptions", emptyList(), listOf("Subscriptions")),
+        Targets.Tab("you", emptyList(), listOf("You", "Library")),
+    )
+
     /** Instagram's bottom tabs, found by ID first and then by their label. */
     class Tab(val kind: String, val ids: List<String>, val labels: List<String>)
 

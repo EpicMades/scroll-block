@@ -47,6 +47,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var igExplore = false
     private var igExploreGrid = true
     private var igHomeStoriesOnly = true
+    private var ytHome = true
     private var lastSnapAt = 0L
     private var ytShorts = true
     private var allowShared = true
@@ -134,6 +135,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         igExplore = pref(Prefs.IG_EXPLORE)
         igExploreGrid = pref(Prefs.IG_EXPLORE_GRID)
         igHomeStoriesOnly = pref(Prefs.IG_HOME_STORIES_ONLY)
+        ytHome = pref(Prefs.YT_HOME)
         ytShorts = pref(Prefs.YT_SHORTS)
         allowShared = pref(Prefs.ALLOW_SHARED)
         blurMode = pref(Prefs.BLUR_MODE)
@@ -237,7 +239,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (debug) dump(root, pkg, viewer, onFeedTab, onExplore, onHome, now)
 
         // Replace Instagram's tab bar with one that has only the allowed tabs.
-        if (isIg && (igReels || igExplore)) updateTabBar(root, tabBars) else tabBar.hide()
+        val customBar = if (isIg) igReels || igExplore else ytShorts
+        if (customBar) updateTabBar(pkg, root, tabBars) else tabBar.hide()
 
         val name = if (isIg) "Reels" else "Shorts"
         var exploreCovered = false
@@ -281,6 +284,18 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                     if (bottom - top > 0) {
                         if (!homeCover.isShowing) countBlock()
                         homeCover.show(Rect(0, top, screenW, bottom), "Feed hidden by Scroll Block\nStories only")
+                        homeCovered = true
+                    }
+                }
+                // YouTube Home: cover everything under the top bar (logo + search stay usable).
+                if (!isIg && ytHome && !viewer &&
+                    isTabSelected(root, tabBars, emptyList(), "Home")
+                ) {
+                    val top = ytHeaderBottom(root, screenW, screenH)
+                    val bottom = barTop ?: screenH
+                    if (top != null && bottom - top > 0) {
+                        if (!homeCover.isShowing) countBlock()
+                        homeCover.show(Rect(0, top, screenW, bottom), "Home feed hidden by Scroll Block\nSearch still works")
                         homeCovered = true
                     }
                 }
@@ -411,7 +426,36 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val down = e.scrollDeltaY > 0 || e.fromIndex > 0
         if (!down) return
         lastSnapAt = now
-        clickTab("home") // tapping Home while on Home scrolls Instagram back to the top
+        clickTab("home", Targets.IG) // tapping Home while on Home scrolls Instagram back to the top
+    }
+
+    // ---- YouTube: Home ----
+
+    /**
+     * Bottom of YouTube's top bar (logo, cast, notifications, search). Only found on
+     * the Home feed itself: search results show a search box instead of the logo,
+     * so they are never covered.
+     */
+    private fun ytHeaderBottom(root: AccessibilityNodeInfo, screenW: Int, screenH: Int): Int? {
+        val d = resources.displayMetrics.density
+        val logo = root.findAccessibilityNodeInfosByText("YouTube").firstOrNull { n ->
+            val desc = n.contentDescription?.toString() ?: return@firstOrNull false
+            val r = onScreen(n) ?: return@firstOrNull false
+            desc.startsWith("YouTube", true) && r.top < screenH / 5
+        } ?: return null
+        val logoBox = onScreen(logo) ?: return null
+        // Walk up to the full-width top bar that holds the logo and search button.
+        var node: AccessibilityNodeInfo? = logo
+        var best = logoBox.bottom
+        var steps = 0
+        while (node != null && steps < 6) {
+            val r = onScreen(node) ?: break
+            if (r.height() > 90 * d) break
+            if (r.width() >= screenW * 0.9f) best = maxOf(best, r.bottom)
+            node = node.parent
+            steps++
+        }
+        return best
     }
 
     // ---- Instagram: Explore search bar ----
@@ -453,10 +497,16 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     // ---- Instagram: Reels button and feed reels ----
 
-    private fun allowedTabs(): List<Targets.Tab> = Targets.igTabs.filter { tab ->
+    private var tabBarPkg = Targets.IG
+
+    private fun tabsFor(pkg: String) = if (pkg == Targets.IG) Targets.igTabs else Targets.ytTabs
+
+    private fun allowedTabs(pkg: String): List<Targets.Tab> = tabsFor(pkg).filter { tab ->
         when (tab.kind) {
             "reels" -> !igReels
             "search" -> !igExplore
+            "shorts" -> !ytShorts
+            "create" -> false
             else -> true
         }
     }
@@ -477,7 +527,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         return null
     }
 
-    private fun updateTabBar(root: AccessibilityNodeInfo, tabBars: List<AccessibilityNodeInfo>) {
+    private fun updateTabBar(pkg: String, root: AccessibilityNodeInfo, tabBars: List<AccessibilityNodeInfo>) {
+        tabBarPkg = pkg
         val bar = tabBars.firstOrNull { it.isVisibleToUser }
         if (bar == null) { tabBar.hide(); return }
         val r = Rect()
@@ -485,7 +536,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (r.width() <= 0 || r.height() <= 0) { tabBar.hide(); return }
 
         // Keep the allowed tabs in Instagram's own left-to-right order.
-        val found = allowedTabs().mapNotNull { tab ->
+        val found = allowedTabs(pkg).mapNotNull { tab ->
             findTab(root, bar, tab)?.let { node ->
                 val b = Rect()
                 node.getBoundsInScreen(b)
@@ -494,18 +545,19 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }.sortedBy { it.second }
         if (found.isEmpty()) { tabBar.hide(); return }
         val selected = found.firstOrNull { it.third }?.first
-        tabBar.show(r, found.map { it.first }, selected)
+        tabBar.show(pkg, r, found.map { it.first }, selected)
     }
 
     /** Our tab bar was tapped: tap the matching real Instagram tab. */
-    private fun clickTab(kind: String) {
+    private fun clickTab(kind: String, pkg: String = tabBarPkg) {
         val root = rootInActiveWindow ?: return
-        val tab = Targets.igTabs.firstOrNull { it.kind == kind } ?: return
-        val bar = Targets.instagram.tabBarIds.flatMap { root.findAccessibilityNodeInfosByViewId(it) }.firstOrNull()
+        val t = Targets.forPackage(pkg) ?: return
+        val tab = tabsFor(pkg).firstOrNull { it.kind == kind } ?: return
+        val bar = t.tabBarIds.flatMap { root.findAccessibilityNodeInfosByViewId(it) }.firstOrNull()
         var node = findTab(root, bar, tab)
         while (node != null && !node.isClickable) node = node.parent
         node?.performAction(AccessibilityNodeInfo.ACTION_CLICK)
-        handler.postDelayed({ checkScreen(Targets.IG, SystemClock.uptimeMillis()) }, 150)
+        handler.postDelayed({ checkScreen(pkg, SystemClock.uptimeMillis()) }, 150)
     }
 
     private fun findReelRects(root: AccessibilityNodeInfo, screenW: Int, clipBottom: Int): List<Rect> {

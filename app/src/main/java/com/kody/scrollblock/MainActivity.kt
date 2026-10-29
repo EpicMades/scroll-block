@@ -86,7 +86,8 @@ class MainActivity : Activity() {
         toggle(Prefs.IG_EXPLORE_GRID, "If Explore is allowed: cover its grid (search still works)", false)
 
         section("YOUTUBE")
-        toggle(Prefs.YT_SHORTS, "Block Shorts tab + shorts scrolling", true)
+        toggle(Prefs.YT_SHORTS, "Hide the Shorts tab + block shorts scrolling", true)
+        toggle(Prefs.YT_HOME, "Home: cover the feed (search still works)", true)
 
         section("BOTH")
         toggle(Prefs.ALLOW_SHARED, "Allow a single reel/short opened from a DM or link", true)
