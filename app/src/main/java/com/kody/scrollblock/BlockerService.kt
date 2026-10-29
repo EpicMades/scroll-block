@@ -246,7 +246,10 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val onFeedTab = viewer && isTabSelected(root, tabBars, t.feedTabIds, t.feedTabLabel)
         val isIg = pkg == Targets.IG
         val onExplore = isIg && isTabSelected(root, tabBars, t.exploreTabIds, t.exploreTabLabel)
-        val onHome = isIg && isTabSelected(root, tabBars, t.homeTabIds, t.homeTabLabel)
+        // Home's top bar (Instagram logo, likes, messages) on screen means Home, even right
+        // after a fresh start, when Instagram hasn't marked the Home tab as selected yet.
+        val onHome = isIg && (isTabSelected(root, tabBars, t.homeTabIds, t.homeTabLabel) ||
+            (!onExplore && !onFeedTab && hasAnyId(root, t.homeActionBarIds)))
 
         // Remember where a player came from: right after reels were covered = tapped from the feed.
         if (viewer) {
