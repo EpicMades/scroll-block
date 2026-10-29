@@ -2,33 +2,31 @@ package com.kody.scrollblock
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.content.res.Configuration
+import android.graphics.Canvas
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Build
 import android.view.Gravity
 import android.view.View
 import android.view.WindowManager
+import kotlin.math.min
 
 /**
- * A small patch, the same color as Instagram's tab bar, over the Reels button.
- * It swallows taps, so the button is effectively gone.
+ * A see-through layer over Instagram's Reels button that draws a red slash across
+ * the icon and swallows taps, so the button no longer works.
  */
 class TabCover(private val ctx: Context) {
 
     private val wm = ctx.getSystemService(WindowManager::class.java)
     private var view: View? = null
     private var current: Rect? = null
-    private var currentColor = 0
 
     val isShowing: Boolean get() = view != null
 
     @SuppressLint("ClickableViewAccessibility")
     fun show(r: Rect) {
-        val night = (ctx.resources.configuration.uiMode and Configuration.UI_MODE_NIGHT_MASK) ==
-            Configuration.UI_MODE_NIGHT_YES
-        val color = if (night) 0xFF000000.toInt() else 0xFFFFFFFF.toInt()
-        if (view != null && r == current && color == currentColor) return
+        if (view != null && r == current) return
 
         val lp = WindowManager.LayoutParams(
             r.width(), r.height(),
@@ -50,18 +48,15 @@ class TabCover(private val ctx: Context) {
         val v = view
         try {
             if (v == null) {
-                val nv = View(ctx).apply {
-                    setBackgroundColor(color)
+                val nv = SlashView(ctx).apply {
                     setOnTouchListener { _, _ -> true } // eat taps
                 }
                 wm.addView(nv, lp)
                 view = nv
             } else {
-                v.setBackgroundColor(color)
                 wm.updateViewLayout(v, lp)
             }
             current = Rect(r)
-            currentColor = color
         } catch (_: Exception) {
             view = null
             current = null
@@ -72,5 +67,23 @@ class TabCover(private val ctx: Context) {
         view?.let { try { wm.removeView(it) } catch (_: Exception) {} }
         view = null
         current = null
+    }
+
+    private class SlashView(ctx: Context) : View(ctx) {
+        private val density = ctx.resources.displayMetrics.density
+        private val red = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFF3B30.toInt()
+            strokeWidth = 3.5f * density
+            strokeCap = Paint.Cap.ROUND
+            style = Paint.Style.STROKE
+        }
+
+        override fun onDraw(canvas: Canvas) {
+            // A slash about the size of the tab icon, centered on it.
+            val half = min(width, height) * 0.30f
+            val cx = width / 2f
+            val cy = height / 2f
+            canvas.drawLine(cx - half, cy + half, cx + half, cy - half, red)
+        }
     }
 }

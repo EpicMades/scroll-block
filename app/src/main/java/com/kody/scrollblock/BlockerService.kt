@@ -56,6 +56,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     /** True while the Instagram home feed or Explore is on screen (patches follow scrolling). */
     private var patchMode = false
     private var lastPatchedAt = 0L
+    private var lastFullCheckAt = 0L
+    private var patchClipBottom = Int.MAX_VALUE
 
     // Any swipe player on screen (allowed or not)
     private var seenViewerPkg: String? = null
@@ -158,8 +160,26 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }
     }
 
+    /**
+     * While scrolling the feed, only move the patches (2 quick lookups) and do the
+     * full screen check a few times a second. This keeps patches glued to the reels.
+     */
+    private fun quickPatchUpdate(pkg: String, now: Long): Boolean {
+        if (!patchMode || pkg != Targets.IG || now - lastFullCheckAt >= FULL_CHECK_MS) return false
+        val root = rootInActiveWindow ?: return false
+        if (root.packageName?.toString() != pkg) return false
+        lastCheckAt = now
+        val rects = findReelRects(root, resources.displayMetrics.widthPixels, patchClipBottom)
+        patches.show(rects)
+        muter.set("patch", rects.isNotEmpty())
+        if (rects.isNotEmpty()) lastPatchedAt = now
+        scheduleWatch()
+        return true
+    }
+
     private fun throttledCheck(pkg: String, now: Long, interval: Long) {
         if (now - lastCheckAt >= interval) {
+            if (quickPatchUpdate(pkg, now)) return
             checkScreen(pkg, now)
         } else if (pendingPkg == null) {
             pendingPkg = pkg
@@ -171,6 +191,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     private fun checkScreen(pkg: String, now: Long) {
         lastCheckAt = now
+        lastFullCheckAt = now
         val t = Targets.forPackage(pkg) ?: return
         val root = rootInActiveWindow ?: return
         if (root.packageName?.toString() != pkg) return
@@ -222,7 +243,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 val patchable = isIg && igFeedReels && !viewer && (onHome || onExplore)
                 patchMode = patchable
                 if (patchable) {
-                    val rects = findReelRects(root, screenW, barTop ?: screenH)
+                    patchClipBottom = barTop ?: screenH
+                    val rects = findReelRects(root, screenW, patchClipBottom)
                     patches.show(rects)
                     muter.set("patch", rects.isNotEmpty())
                     if (rects.isNotEmpty()) lastPatchedAt = now
@@ -481,8 +503,9 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     companion object {
         private const val BACK_COOLDOWN_MS = 700L
-        private const val CHECK_INTERVAL_MS = 400L
-        private const val FAST_INTERVAL_MS = 50L
+        private const val CHECK_INTERVAL_MS = 150L
+        private const val FAST_INTERVAL_MS = 16L
+        private const val FULL_CHECK_MS = 300L
         private const val WATCH_INTERVAL_MS = 500L
         private const val FROM_FEED_WINDOW_MS = 3000L
         private const val EVENT_MASK = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
