@@ -1,0 +1,5 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Scroll Block</string>
+    <string name="a11y_description">Scroll Block watches only Instagram and YouTube. It presses Back when you open the Reels feed, Shorts feed, or Instagram Explore, or when you swipe to another reel or short. It never reads, stores, or sends your messages or content anywhere.</string>
+</resources>
