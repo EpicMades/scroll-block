@@ -457,7 +457,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }
         // The "Suggested reels" row in the home feed: cover its title and the whole row.
         var row: Rect? = null
-        for (id in Targets.instagram.feedReelRowIds) {
+        for (id in Targets.feedReelRowIds) {
             for (n in root.findAccessibilityNodeInfosByViewId(id)) {
                 val r = onScreen(n) ?: continue
                 row = row?.apply { union(r) } ?: Rect(r)
