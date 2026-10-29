@@ -15,6 +15,7 @@ object Prefs {
     const val IG_OPEN_MESSAGES = "ig_open_messages"
     const val YT_SHORTS = "yt_shorts"
     const val YT_HOME = "yt_home_cover"
+    const val YT_OPEN_HOME = "yt_open_home"
     const val ALLOW_SHARED = "allow_shared"
     const val BLUR_MODE = "blur_mode"
     const val DEBUG = "debug"

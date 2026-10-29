@@ -49,6 +49,11 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var igHomeStoriesOnly = true
     private var ytHome = true
     private var igOpenMessages = true
+    private var ytOpenHome = true
+    private var ytOpenedAt = 0L
+    private var ytLandingHandled = false
+    private var ytLastTop = 0
+    private var ytLastHeaderAt = 0L
     /** Which app was last in front, to spot a fresh open of Instagram. */
     private var frontPkg: String? = null
     private var igOpenedAt = 0L
@@ -148,6 +153,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         igHomeStoriesOnly = pref(Prefs.IG_HOME_STORIES_ONLY)
         ytHome = pref(Prefs.YT_HOME)
         igOpenMessages = pref(Prefs.IG_OPEN_MESSAGES)
+        ytOpenHome = pref(Prefs.YT_OPEN_HOME)
         ytShorts = pref(Prefs.YT_SHORTS)
         allowShared = pref(Prefs.ALLOW_SHARED)
         blurMode = pref(Prefs.BLUR_MODE)
@@ -178,7 +184,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
-                if (pkg == Targets.IG && homeCover.isShowing) keepHomeAtTop(event, now)
+                if (homeCover.isShowing) keepHomeAtTop(pkg, event, now)
                 onScrolled(pkg, event, now)
                 if (now - lastBackAt >= BACK_COOLDOWN_MS && patchMode) throttledCheck(pkg, now, interval)
             }
@@ -255,6 +261,18 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (frontPkg != pkg) {
             frontPkg = pkg
             if (isIg) { igOpenedAt = now; igLandingHandled = false }
+            else { ytOpenedAt = now; ytLandingHandled = false }
+        }
+        // Fresh open of YouTube: go straight to Home.
+        if (!isIg && ytOpenHome && !ytLandingHandled && now - ytOpenedAt < 2500) {
+            val bar = tabBars.firstOrNull { onScreen(it) != null }
+            if (bar != null) {
+                ytLandingHandled = true
+                if (!isTabSelected(root, tabBars, emptyList(), "Home")) {
+                    clickTab("home", Targets.YT)
+                    return
+                }
+            }
         }
         if (isIg && igOpenMessages && !igLandingHandled && now - igOpenedAt < 2500 && !viewer) {
             val bar = tabBars.firstOrNull { onScreen(it) != null }
@@ -323,7 +341,15 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 if (!isIg && ytHome && !viewer &&
                     isTabSelected(root, tabBars, emptyList(), "Home")
                 ) {
-                    val top = ytHeaderBottom(root, screenW, screenH)
+                    var top = ytHeaderBottom(root, screenW, screenH)
+                    if (top != null) {
+                        ytLastTop = top
+                        ytLastHeaderAt = now
+                    } else if (homeCover.isShowing && now - ytLastHeaderAt < 2000 && !typingInSearch(root)) {
+                        // The top bar slid away for a moment (feed scrolled): hold the cover in place
+                        // while the feed snaps back to the top.
+                        top = ytLastTop
+                    }
                     val bottom = barTop ?: screenH
                     if (top != null && bottom - top > 0) {
                         if (!homeCover.isShowing) countBlock()
@@ -447,7 +473,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     }
 
     /** Scrolling the home feed down snaps it straight back to the top (stories). */
-    private fun keepHomeAtTop(e: AccessibilityEvent, now: Long) {
+    private fun keepHomeAtTop(pkg: String, e: AccessibilityEvent, now: Long) {
         if (now - lastSnapAt < 700) return
         val src = e.source ?: return
         val r = Rect()
@@ -460,10 +486,14 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val down = e.scrollDeltaY > 0 || e.fromIndex > 0
         if (!down) return
         lastSnapAt = now
-        clickTab("home", Targets.IG) // tapping Home while on Home scrolls Instagram back to the top
+        clickTab("home", pkg) // tapping Home while on Home scrolls the app back to the top
     }
 
     // ---- YouTube: Home ----
+
+    /** True while typing in a search box (so the search screen is never covered). */
+    private fun typingInSearch(root: AccessibilityNodeInfo): Boolean =
+        root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT)?.isEditable == true
 
     /**
      * Bottom of YouTube's top bar (logo, cast, notifications, search). Only found on

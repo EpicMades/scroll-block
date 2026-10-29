@@ -89,6 +89,7 @@ class MainActivity : Activity() {
         section("YOUTUBE")
         toggle(Prefs.YT_SHORTS, "Hide the Shorts tab + block shorts scrolling", true)
         toggle(Prefs.YT_HOME, "Home: cover the feed (search still works)", true)
+        toggle(Prefs.YT_OPEN_HOME, "Open YouTube on Home", true)
 
         section("BOTH")
         toggle(Prefs.ALLOW_SHARED, "Allow a single reel/short opened from a DM or link", true)
