@@ -91,7 +91,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     }
 
     /** While anything is drawn on screen, make sure it disappears the moment you leave the app. */
-    private val overlayWatch = Runnable {
+    private val overlayWatch: Runnable = Runnable {
         val pkg = rootInActiveWindow?.packageName?.toString()
         if (pkg == null || Targets.forPackage(pkg) == null) {
             // Left Instagram/YouTube: remove everything and remember, so the next open is "fresh".
@@ -104,7 +104,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             handler.postDelayed(watchAgain, IDLE_WATCH_MS)
         }
     }
-    private val watchAgain = Runnable { overlayWatch.run() }
+    private val watchAgain: Runnable = Runnable { overlayWatch.run() }
 
     override fun onServiceConnected() {
         prefs = Prefs.get(this)
