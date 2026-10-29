@@ -195,6 +195,7 @@ class CustomTabBar(
         PixelFormat.TRANSLUCENT
     ).apply {
         gravity = Gravity.TOP or Gravity.START
+            windowAnimations = 0 // appear and disappear instantly
         x = r.left
         y = r.top
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {

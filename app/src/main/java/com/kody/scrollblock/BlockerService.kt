@@ -58,6 +58,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var lastCheckAt = 0L
     private var lastDumpAt = 0L
     private var lastToastAt = 0L
+    private var lastToast: Toast? = null
     private var pendingPkg: String? = null
     private var lastBlurMsg: String? = null
 
@@ -634,7 +635,12 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         countBlock()
         if (now - lastToastAt > 2500) {
             lastToastAt = now
-            Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show()
+            // Show the message briefly, then remove it right away instead of letting it linger.
+            lastToast?.cancel()
+            val toast = Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT)
+            lastToast = toast
+            toast.show()
+            handler.postDelayed({ toast.cancel() }, 900)
         }
     }
 
@@ -752,7 +758,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         private const val CHECK_INTERVAL_MS = 150L
         private const val FAST_INTERVAL_MS = 16L
         private const val FULL_CHECK_MS = 300L
-        private const val WATCH_INTERVAL_MS = 500L
+        private const val WATCH_INTERVAL_MS = 150L
         private const val FROM_FEED_WINDOW_MS = 3000L
         private const val EVENT_MASK = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
