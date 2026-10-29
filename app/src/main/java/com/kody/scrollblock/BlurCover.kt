@@ -12,13 +12,16 @@ import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.view.Display
+import android.view.GestureDetector
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
 import android.view.ViewGroup
 import android.view.WindowManager
 import android.widget.FrameLayout
 import android.widget.ImageView
 import android.widget.TextView
+import kotlin.math.abs
 
 /**
  * Covers a rectangle of the screen with a heavily blurred snapshot of what was there.
@@ -29,7 +32,12 @@ import android.widget.TextView
  * touchable = true  -> swallows taps/scrolls in that area (Explore grid)
  * touchable = false -> taps pass through (full-screen Reels/Shorts cover)
  */
-class BlurCover(private val service: AccessibilityService, private val touchable: Boolean) {
+class BlurCover(
+    private val service: AccessibilityService,
+    private val touchable: Boolean,
+    /** Called with +1 (swiped left → next tab) or -1 (swiped right → previous tab). */
+    private val onSwipe: ((Int) -> Unit)? = null,
+) {
 
     private val wm = service.getSystemService(WindowManager::class.java)
     private val handler = Handler(Looper.getMainLooper())
@@ -151,7 +159,23 @@ class BlurCover(private val service: AccessibilityService, private val touchable
         frame.addView(img, full)
         frame.addView(shade, FrameLayout.LayoutParams(full))
         frame.addView(tv, FrameLayout.LayoutParams(full))
-        if (touchable) frame.setOnTouchListener { _, _ -> true }
+        if (touchable) {
+            val minDist = 50 * service.resources.displayMetrics.density
+            val detector = GestureDetector(ctx, object : GestureDetector.SimpleOnGestureListener() {
+                override fun onDown(e: MotionEvent) = true
+                override fun onFling(e1: MotionEvent?, e2: MotionEvent, vx: Float, vy: Float): Boolean {
+                    val start = e1 ?: return false
+                    val dx = e2.x - start.x
+                    val dy = e2.y - start.y
+                    if (abs(dx) > minDist && abs(dx) > abs(dy) * 1.2f) {
+                        onSwipe?.invoke(if (dx < 0) 1 else -1)
+                        return true
+                    }
+                    return false
+                }
+            })
+            frame.setOnTouchListener { _, ev -> detector.onTouchEvent(ev); true }
+        }
 
         root = frame
         image = img

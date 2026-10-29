@@ -110,7 +110,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         prefs = Prefs.get(this)
         blur = BlurCover(this, touchable = false)
         exploreCover = BlurCover(this, touchable = true)
-        homeCover = BlurCover(this, touchable = true)
+        homeCover = BlurCover(this, touchable = true) { dir -> swipeTab(dir) }
         patches = PatchOverlay(this)
         tabBar = CustomTabBar(this) { kind -> clickTab(kind) }
         muter = Muter(this)
@@ -532,6 +532,17 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     // ---- Instagram: Reels button and feed reels ----
 
     private var tabBarPkg = Targets.IG
+    private var barKinds: List<String> = emptyList()
+    private var barSelected: String? = null
+
+    /** A sideways swipe on the Home cover moves to the neighbouring allowed tab. */
+    private fun swipeTab(dir: Int) {
+        if (tabBarPkg != Targets.IG || barKinds.isEmpty()) return
+        val i = barKinds.indexOf(barSelected ?: "home")
+        if (i < 0) return
+        val next = barKinds.getOrNull(i + dir) ?: return
+        clickTab(next, Targets.IG)
+    }
 
     private fun tabsFor(pkg: String) = if (pkg == Targets.IG) Targets.igTabs else Targets.ytTabs
 
@@ -579,7 +590,9 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }.sortedBy { it.second }
         if (found.isEmpty()) { tabBar.hide(); return }
         val selected = found.firstOrNull { it.third }?.first
-        tabBar.show(pkg, r, found.map { it.first }, selected)
+        barKinds = found.map { it.first }
+        barSelected = selected
+        tabBar.show(pkg, r, barKinds, selected)
     }
 
     /** Our tab bar was tapped: tap the matching real Instagram tab. */
