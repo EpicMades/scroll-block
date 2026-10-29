@@ -21,7 +21,17 @@ object Targets {
         val exploreTabLabel: String? = null,
         /** The bottom navigation bar. Tab labels are only matched inside it. */
         val tabBarIds: List<String> = emptyList(),
+        /** Home tab, where reels mixed into the feed get covered. */
+        val homeTabIds: List<String> = emptyList(),
+        val homeTabLabel: String? = null,
     )
+
+    /**
+     * Reels inside the Instagram home feed and Explore grid are found by their
+     * accessibility description, which starts with one of these words
+     * (e.g. "Reel by …", "Video by …").
+     */
+    val feedReelWords = listOf("Reel", "Video")
 
     val instagram = AppTargets(
         viewerIds = setOf(
@@ -34,6 +44,8 @@ object Targets {
         exploreTabIds = listOf("$IG:id/search_tab"),
         exploreTabLabel = "Search and explore",
         tabBarIds = listOf("$IG:id/tab_bar"),
+        homeTabIds = listOf("$IG:id/feed_tab"),
+        homeTabLabel = "Home",
     )
 
     val youtube = AppTargets(

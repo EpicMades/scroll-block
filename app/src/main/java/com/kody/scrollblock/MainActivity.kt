@@ -79,14 +79,17 @@ class MainActivity : Activity() {
         section("MASTER")
         toggle(Prefs.ENABLED, "Blocking on", true)
 
-        section("WHAT TO BLOCK")
-        toggle(Prefs.IG_REELS, "Instagram Reels feed + reel scrolling", true)
-        toggle(Prefs.IG_EXPLORE, "Instagram Explore tab", true)
-        toggle(Prefs.YT_SHORTS, "YouTube Shorts feed + shorts scrolling", true)
-        toggle(Prefs.ALLOW_SHARED, "Allow a single reel/short opened from a DM or link", true)
+        section("INSTAGRAM")
+        toggle(Prefs.IG_REELS, "Hide the Reels button + block reel scrolling", true)
+        toggle(Prefs.IG_FEED_REELS, "Cover & mute reels in Home feed and Explore", true)
+        toggle(Prefs.IG_EXPLORE, "Block Explore completely", false)
 
-        section("HOW TO BLOCK FEEDS")
-        toggle(Prefs.BLUR_MODE, "Blur & mute Reels/Shorts/Explore (off = send me back)", true)
+        section("YOUTUBE")
+        toggle(Prefs.YT_SHORTS, "Block Shorts tab + shorts scrolling", true)
+
+        section("BOTH")
+        toggle(Prefs.ALLOW_SHARED, "Allow a single reel/short opened from a DM or link", true)
+        toggle(Prefs.BLUR_MODE, "Blur & mute blocked screens (off = send me back)", true)
 
         count = TextView(this).apply { textSize = 14f; setPadding(0, dp(16), 0, 0) }
         col.addView(count)
@@ -123,7 +126,7 @@ class MainActivity : Activity() {
         super.onResume()
         val prefs = Prefs.get(this)
         switches.forEach { (key, s) ->
-            s.isChecked = prefs.getBoolean(key, key != Prefs.DEBUG)
+            s.isChecked = prefs.getBoolean(key, Prefs.default(key))
         }
         val on = isServiceEnabled()
         status.text = if (on) "✅ Accessibility permission is on. Blocking works in the background."

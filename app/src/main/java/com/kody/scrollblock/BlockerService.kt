@@ -16,21 +16,31 @@ import kotlin.math.abs
  * Watches only Instagram and YouTube (restricted in accessibility_config.xml, so the
  * system never wakes this service for any other app).
  *
- * Rules:
- *  - Reels tab / Shorts tab / Explore tab -> blurred + muted (or sent Back, if Blur mode is off).
- *  - A single reel or short opened from a DM, link or post -> plays normally.
- *  - Swiping to the next reel/short -> pressed Back (returns you to where you came from).
- *  - The home feed and everything else -> untouched.
+ * Instagram:
+ *  - Reels button in the tab bar -> covered, taps do nothing.
+ *  - Reels in the home feed and Explore grid -> covered with a patch, audio muted.
+ *  - Tapping through to a feed/Explore reel anyway -> player blurred + muted.
+ *  - Reels tab (if reached some other way) -> blurred + muted.
+ *  - Optionally, all of Explore -> blurred.
+ * YouTube:
+ *  - Shorts tab -> blurred + muted.
+ * Both:
+ *  - A single reel/short opened from a DM or link -> plays normally.
+ *  - Swiping to the next one -> Back.
  */
 class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPreferenceChangeListener {
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var overlay: ReelOverlay
+    private lateinit var blur: ReelOverlay
+    private lateinit var patches: PatchOverlay
+    private lateinit var tabCover: TabCover
+    private lateinit var muter: Muter
     private val handler = Handler(Looper.getMainLooper())
 
     private var enabled = true
     private var igReels = true
-    private var igExplore = true
+    private var igFeedReels = true
+    private var igExplore = false
     private var ytShorts = true
     private var allowShared = true
     private var blurMode = true
@@ -41,9 +51,17 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var lastDumpAt = 0L
     private var lastToastAt = 0L
     private var pendingPkg: String? = null
-    private var lastOverlayMsg: String? = null
+    private var lastBlurMsg: String? = null
 
-    // State of the single reel/short currently allowed on screen
+    /** True while the Instagram home feed or Explore is on screen (patches follow scrolling). */
+    private var patchMode = false
+    private var lastPatchedAt = 0L
+
+    // Any swipe player on screen (allowed or not)
+    private var seenViewerPkg: String? = null
+    private var viewerFromFeed = false
+
+    // The single reel/short currently allowed to play
     private var viewerPkg: String? = null
     private var viewerStartIndex = -1
     private var viewerStartScrollY = Int.MIN_VALUE
@@ -55,35 +73,35 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         checkScreen(pkg, SystemClock.uptimeMillis())
     }
 
-    /** While the blur is up, keep checking so it disappears the moment you leave. */
-    private val overlayWatch = object : Runnable {
-        override fun run() {
-            if (!overlay.isShowing) return
-            val pkg = rootInActiveWindow?.packageName?.toString()
-            if (pkg == null || Targets.forPackage(pkg) == null) {
-                hideOverlay()
-                return
-            }
+    /** While anything is drawn on screen, make sure it disappears the moment you leave the app. */
+    private val overlayWatch = Runnable {
+        if (!anyOverlay()) return@Runnable
+        val pkg = rootInActiveWindow?.packageName?.toString()
+        if (pkg == null || Targets.forPackage(pkg) == null) {
+            hideAll()
+        } else {
             checkScreen(pkg, SystemClock.uptimeMillis())
-            if (overlay.isShowing) handler.postDelayed(this, WATCH_INTERVAL_MS)
         }
     }
 
     override fun onServiceConnected() {
         prefs = Prefs.get(this)
-        overlay = ReelOverlay(this)
+        blur = ReelOverlay(this)
+        patches = PatchOverlay(this)
+        tabCover = TabCover(this)
+        muter = Muter(this)
         loadPrefs()
         prefs.registerOnSharedPreferenceChangeListener(this)
     }
 
     override fun onUnbind(intent: Intent?): Boolean {
-        if (::overlay.isInitialized) hideOverlay()
+        hideAll()
         return super.onUnbind(intent)
     }
 
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
-        if (::overlay.isInitialized) overlay.hide()
+        hideAll()
         if (::prefs.isInitialized) prefs.unregisterOnSharedPreferenceChangeListener(this)
         super.onDestroy()
     }
@@ -95,24 +113,28 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         loadPrefs()
     }
 
+    private fun pref(key: String) = prefs.getBoolean(key, Prefs.default(key))
+
     private fun loadPrefs() {
-        enabled = prefs.getBoolean(Prefs.ENABLED, true)
-        igReels = prefs.getBoolean(Prefs.IG_REELS, true)
-        igExplore = prefs.getBoolean(Prefs.IG_EXPLORE, true)
-        ytShorts = prefs.getBoolean(Prefs.YT_SHORTS, true)
-        allowShared = prefs.getBoolean(Prefs.ALLOW_SHARED, true)
-        blurMode = prefs.getBoolean(Prefs.BLUR_MODE, true)
-        debug = prefs.getBoolean(Prefs.DEBUG, false)
+        enabled = pref(Prefs.ENABLED)
+        igReels = pref(Prefs.IG_REELS)
+        igFeedReels = pref(Prefs.IG_FEED_REELS)
+        igExplore = pref(Prefs.IG_EXPLORE)
+        ytShorts = pref(Prefs.YT_SHORTS)
+        allowShared = pref(Prefs.ALLOW_SHARED)
+        blurMode = pref(Prefs.BLUR_MODE)
+        debug = pref(Prefs.DEBUG)
 
         // When switched off, ask the system to stop sending events entirely (zero battery cost).
         serviceInfo?.let { info ->
             info.eventTypes = if (enabled) EVENT_MASK else 0
             serviceInfo = info
         }
+        hideAll() // redrawn on the next event with the new settings
         if (!enabled) {
             handler.removeCallbacks(trailingCheck)
             viewerPkg = null
-            hideOverlay()
+            seenViewerPkg = null
         }
     }
 
@@ -123,18 +145,25 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val now = SystemClock.uptimeMillis()
         if (now - lastBackAt < BACK_COOLDOWN_MS) return
 
+        // Patches have to follow the feed as it scrolls, so check more often there.
+        val interval = if (patchMode && pkg == Targets.IG) FAST_INTERVAL_MS else CHECK_INTERVAL_MS
+
         when (event.eventType) {
-            AccessibilityEvent.TYPE_VIEW_SCROLLED -> onScrolled(pkg, event, now)
-            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> checkScreen(pkg, now)
-            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> {
-                // Throttle: content changes fire constantly while the feed animates.
-                if (now - lastCheckAt >= CHECK_INTERVAL_MS) {
-                    checkScreen(pkg, now)
-                } else if (pendingPkg == null) {
-                    pendingPkg = pkg
-                    handler.postDelayed(trailingCheck, CHECK_INTERVAL_MS - (now - lastCheckAt))
-                }
+            AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
+                onScrolled(pkg, event, now)
+                if (now - lastBackAt >= BACK_COOLDOWN_MS && patchMode) throttledCheck(pkg, now, interval)
             }
+            AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED -> checkScreen(pkg, now)
+            AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED -> throttledCheck(pkg, now, interval)
+        }
+    }
+
+    private fun throttledCheck(pkg: String, now: Long, interval: Long) {
+        if (now - lastCheckAt >= interval) {
+            checkScreen(pkg, now)
+        } else if (pendingPkg == null) {
+            pendingPkg = pkg
+            handler.postDelayed(trailingCheck, interval - (now - lastCheckAt))
         }
     }
 
@@ -146,67 +175,172 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val root = rootInActiveWindow ?: return
         if (root.packageName?.toString() != pkg) return
 
+        val dm = resources.displayMetrics
+        val screenW = dm.widthPixels
+        val screenH = dm.heightPixels
         val tabBars = t.tabBarIds.flatMap { root.findAccessibilityNodeInfosByViewId(it) }
+        val barTop = tabBarTop(tabBars, screenH)
         val viewer = hasAnyId(root, t.viewerIds)
         // The feed tab only counts when the swipe player is actually on screen.
         val onFeedTab = viewer && isTabSelected(root, tabBars, t.feedTabIds, t.feedTabLabel)
-        val onExplore = pkg == Targets.IG &&
-            isTabSelected(root, tabBars, t.exploreTabIds, t.exploreTabLabel)
+        val isIg = pkg == Targets.IG
+        val onExplore = isIg && isTabSelected(root, tabBars, t.exploreTabIds, t.exploreTabLabel)
+        val onHome = isIg && isTabSelected(root, tabBars, t.homeTabIds, t.homeTabLabel)
 
-        if (debug) dump(root, pkg, viewer, onFeedTab, onExplore, now)
-
-        val name = if (pkg == Targets.IG) "Reels" else "Shorts"
-        when {
-            igExplore && onExplore -> restrict("Explore", mute = false, tabBars, now)
-            featureOn(pkg) && onFeedTab -> restrict(name, mute = true, tabBars, now)
-            featureOn(pkg) && viewer && !allowShared -> restrict(name, mute = true, tabBars, now)
-            else -> {
-                hideOverlay()
-                if (viewer) {
-                    if (viewerPkg != pkg) {
-                        viewerPkg = pkg
-                        viewerStartIndex = -1
-                        viewerStartScrollY = Int.MIN_VALUE
-                        viewerOpenedAt = now
-                    }
-                } else if (viewerPkg == pkg) {
-                    viewerPkg = null
-                }
+        // Remember where a player came from: right after reels were covered = tapped from the feed.
+        if (viewer) {
+            if (seenViewerPkg != pkg) {
+                seenViewerPkg = pkg
+                viewerFromFeed = isIg && igFeedReels && now - lastPatchedAt < FROM_FEED_WINDOW_MS
             }
+        } else if (seenViewerPkg == pkg) {
+            seenViewerPkg = null
+            viewerFromFeed = false
+        }
+
+        if (debug) dump(root, pkg, viewer, onFeedTab, onExplore, onHome, now)
+
+        // Hide the Reels button whenever Instagram's tab bar is showing.
+        if (isIg && igReels) updateTabCover(root, tabBars) else tabCover.hide()
+
+        val name = if (isIg) "Reels" else "Shorts"
+        when {
+            igExplore && onExplore -> {
+                clearPatches()
+                restrict("Explore", mute = false, barTop, screenH, now)
+            }
+            featureOn(pkg) && onFeedTab -> {
+                clearPatches()
+                restrict(name, mute = true, barTop, screenH, now)
+            }
+            featureOn(pkg) && viewer && (!allowShared || viewerFromFeed) -> {
+                clearPatches()
+                restrict(name, mute = true, barTop, screenH, now)
+            }
+            else -> {
+                hideBlur()
+                val patchable = isIg && igFeedReels && !viewer && (onHome || onExplore)
+                patchMode = patchable
+                if (patchable) {
+                    val rects = findReelRects(root, screenW, barTop ?: screenH)
+                    patches.show(rects)
+                    muter.set("patch", rects.isNotEmpty())
+                    if (rects.isNotEmpty()) lastPatchedAt = now
+                } else {
+                    clearPatches()
+                }
+                trackAllowedViewer(pkg, viewer, now)
+            }
+        }
+        scheduleWatch()
+    }
+
+    private fun trackAllowedViewer(pkg: String, viewer: Boolean, now: Long) {
+        if (viewer) {
+            if (viewerPkg != pkg) {
+                viewerPkg = pkg
+                viewerStartIndex = -1
+                viewerStartScrollY = Int.MIN_VALUE
+                viewerOpenedAt = now
+            }
+        } else if (viewerPkg == pkg) {
+            viewerPkg = null
         }
     }
 
-    private fun restrict(what: String, mute: Boolean, tabBars: List<AccessibilityNodeInfo>, now: Long) {
+    private fun restrict(what: String, mute: Boolean, barTop: Int?, screenH: Int, now: Long) {
         viewerPkg = null
         if (!blurMode) {
             block("$what is blocked", now)
             return
         }
-        // Cover everything above the bottom tab bar, so the tabs stay usable.
-        val screenH = resources.displayMetrics.heightPixels
-        var bottom = (screenH * 0.88f).toInt()
-        tabBars.firstOrNull()?.let { bar ->
-            val r = Rect()
-            bar.getBoundsInScreen(r)
-            if (r.top in (screenH / 2)..screenH) bottom = r.top
-        }
-        val msg = "$what hidden by Scroll Block\nTap a tab below to leave"
-        val wasShowing = overlay.isShowing
-        overlay.show(bottom, msg, mute)
-        if (!wasShowing || lastOverlayMsg != msg) {
-            lastOverlayMsg = msg
-            handler.removeCallbacks(overlayWatch)
-            handler.postDelayed(overlayWatch, WATCH_INTERVAL_MS)
+        val msg = if (barTop != null) "$what hidden by Scroll Block\nTap a tab below to leave"
+        else "$what hidden by Scroll Block\nSwipe back to leave"
+        val wasShowing = blur.isShowing
+        blur.show(barTop ?: screenH, msg)
+        muter.set("blur", mute)
+        if (!wasShowing || lastBlurMsg != msg) {
+            lastBlurMsg = msg
             if (!wasShowing) countBlock()
         }
     }
 
-    private fun hideOverlay() {
-        if (!::overlay.isInitialized) return
+    private fun anyOverlay() = ::blur.isInitialized &&
+        (blur.isShowing || patches.isShowing || tabCover.isShowing)
+
+    private fun scheduleWatch() {
         handler.removeCallbacks(overlayWatch)
-        lastOverlayMsg = null
-        overlay.hide()
+        if (anyOverlay()) handler.postDelayed(overlayWatch, WATCH_INTERVAL_MS)
     }
+
+    private fun hideBlur() {
+        if (!::blur.isInitialized) return
+        lastBlurMsg = null
+        blur.hide()
+        muter.set("blur", false)
+    }
+
+    private fun clearPatches() {
+        if (!::patches.isInitialized) return
+        patchMode = false
+        patches.hide()
+        muter.set("patch", false)
+    }
+
+    private fun hideAll() {
+        if (!::blur.isInitialized) return
+        handler.removeCallbacks(overlayWatch)
+        hideBlur()
+        clearPatches()
+        tabCover.hide()
+        muter.clear()
+    }
+
+    // ---- Instagram: Reels button and feed reels ----
+
+    private fun updateTabCover(root: AccessibilityNodeInfo, tabBars: List<AccessibilityNodeInfo>) {
+        val t = Targets.instagram
+        var target: AccessibilityNodeInfo? =
+            t.feedTabIds.flatMap { root.findAccessibilityNodeInfosByViewId(it) }.firstOrNull()
+        if (target == null && t.feedTabLabel != null) {
+            target = tabBars.flatMap { it.findAccessibilityNodeInfosByText(t.feedTabLabel) }
+                .firstOrNull { n ->
+                    n.contentDescription?.toString().equals(t.feedTabLabel, true) ||
+                        n.text?.toString().equals(t.feedTabLabel, true)
+                }
+        }
+        val node = target
+        if (node == null || !node.isVisibleToUser) { tabCover.hide(); return }
+        val r = Rect()
+        node.getBoundsInScreen(r)
+        if (r.width() <= 0 || r.height() <= 0) { tabCover.hide(); return }
+        tabCover.show(r)
+    }
+
+    private fun findReelRects(root: AccessibilityNodeInfo, screenW: Int, clipBottom: Int): List<Rect> {
+        val found = mutableListOf<Rect>()
+        for (word in Targets.feedReelWords) {
+            for (n in root.findAccessibilityNodeInfosByText(word)) {
+                val desc = n.contentDescription?.toString() ?: continue
+                if (!desc.startsWith(word, ignoreCase = true)) continue
+                if (!n.isVisibleToUser) continue
+                val r = Rect()
+                n.getBoundsInScreen(r)
+                // Skip small icons/labels; reels are big tiles or full-width posts.
+                if (r.width() < screenW / 4 || r.height() < screenW / 5) continue
+                if (r.bottom > clipBottom) r.bottom = clipBottom
+                if (r.top < 0) r.top = 0
+                if (r.height() <= 0) continue
+                found.add(r)
+            }
+        }
+        // Drop duplicates and patches fully inside another patch.
+        return found.distinct().filter { a ->
+            found.none { b -> b != a && b.contains(a) }
+        }
+    }
+
+    // ---- scrolling inside a swipe player ----
 
     private fun onScrolled(pkg: String, e: AccessibilityEvent, now: Long) {
         if (!featureOn(pkg)) return
@@ -241,7 +375,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         viewerPkg = null
         handler.removeCallbacks(trailingCheck)
         pendingPkg = null
-        hideOverlay()
+        hideBlur()
         performGlobalAction(GLOBAL_ACTION_BACK)
         countBlock()
         if (now - lastToastAt > 2500) {
@@ -258,6 +392,16 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     private fun hasAnyId(root: AccessibilityNodeInfo, ids: Collection<String>): Boolean =
         ids.any { root.findAccessibilityNodeInfosByViewId(it).isNotEmpty() }
+
+    private fun tabBarTop(tabBars: List<AccessibilityNodeInfo>, screenH: Int): Int? {
+        for (bar in tabBars) {
+            if (!bar.isVisibleToUser) continue
+            val r = Rect()
+            bar.getBoundsInScreen(r)
+            if (r.top in (screenH / 2)..screenH) return r.top
+        }
+        return null
+    }
 
     /**
      * A tab counts as open only if its own node is selected. Text labels are only
@@ -294,7 +438,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     private fun dump(
         root: AccessibilityNodeInfo, pkg: String,
-        viewer: Boolean, feedTab: Boolean, explore: Boolean, now: Long,
+        viewer: Boolean, feedTab: Boolean, explore: Boolean, home: Boolean, now: Long,
     ) {
         if (now - lastDumpAt < 2000) return
         lastDumpAt = now
@@ -313,10 +457,22 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             }
             for (i in 0 until n.childCount) n.getChild(i)?.let { queue.add(it) }
         }
+        val mediaLines = mutableListOf<String>()
+        for (word in listOf("reel", "video", "clip")) {
+            for (n in root.findAccessibilityNodeInfosByText(word)) {
+                val r = Rect()
+                n.getBoundsInScreen(r)
+                val id = n.viewIdResourceName?.substringAfter(":id/") ?: "-"
+                val d = (n.contentDescription ?: n.text)?.toString()?.take(60) ?: ""
+                mediaLines.add("$id | $d | ${r.width()}x${r.height()}")
+            }
+        }
         val report = buildString {
             appendLine("App: $pkg")
-            appendLine("Detected → viewer=$viewer feedTab=$feedTab explore=$explore")
+            appendLine("Detected → viewer=$viewer feedTab=$feedTab explore=$explore home=$home")
             appendLine("Selected: ${selected.joinToString()}")
+            appendLine("Reel/video nodes:")
+            mediaLines.distinct().take(25).forEach { appendLine("  $it") }
             appendLine("IDs on screen:")
             appendLine(ids.joinToString(", "))
         }
@@ -326,7 +482,9 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     companion object {
         private const val BACK_COOLDOWN_MS = 700L
         private const val CHECK_INTERVAL_MS = 400L
-        private const val WATCH_INTERVAL_MS = 700L
+        private const val FAST_INTERVAL_MS = 50L
+        private const val WATCH_INTERVAL_MS = 500L
+        private const val FROM_FEED_WINDOW_MS = 3000L
         private const val EVENT_MASK = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
             AccessibilityEvent.TYPE_VIEW_SCROLLED

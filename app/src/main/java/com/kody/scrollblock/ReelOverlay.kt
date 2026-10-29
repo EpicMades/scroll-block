@@ -4,7 +4,6 @@ import android.app.Dialog
 import android.content.Context
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
-import android.media.AudioManager
 import android.os.Build
 import android.view.Gravity
 import android.view.ViewGroup
@@ -12,20 +11,18 @@ import android.view.WindowManager
 import android.widget.TextView
 
 /**
- * A blurred, non-touchable layer drawn over Reels/Shorts/Explore, plus muting media audio.
- * It stops above the app's bottom tab bar, so you can still tap a tab to leave.
+ * A blurred, non-touchable layer drawn over the Reels/Shorts player or Explore.
+ * It stops above the app's bottom tab bar (when there is one), so tabs stay usable.
  */
 class ReelOverlay(private val ctx: Context) {
 
     private val wm = ctx.getSystemService(WindowManager::class.java)
-    private val audio = ctx.getSystemService(AudioManager::class.java)
     private var dialog: Dialog? = null
     private var label: TextView? = null
-    private var weMuted = false
 
     val isShowing: Boolean get() = dialog?.isShowing == true
 
-    fun show(heightPx: Int, message: String, mute: Boolean) {
+    fun show(heightPx: Int, message: String) {
         try {
             val d = dialog ?: build().also { dialog = it }
             label?.text = message
@@ -41,26 +38,10 @@ class ReelOverlay(private val ctx: Context) {
         } catch (e: Exception) {
             dialog = null
         }
-        if (mute) muteAudio() else unmuteAudio()
     }
 
     fun hide() {
         try { dialog?.dismiss() } catch (_: Exception) {}
-        unmuteAudio()
-    }
-
-    private fun muteAudio() {
-        if (weMuted) return
-        if (!audio.isStreamMute(AudioManager.STREAM_MUSIC)) {
-            audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_MUTE, 0)
-            weMuted = true
-        }
-    }
-
-    private fun unmuteAudio() {
-        if (!weMuted) return
-        audio.adjustStreamVolume(AudioManager.STREAM_MUSIC, AudioManager.ADJUST_UNMUTE, 0)
-        weMuted = false
     }
 
     private fun build(): Dialog {
