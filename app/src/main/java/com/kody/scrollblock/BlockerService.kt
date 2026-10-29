@@ -82,6 +82,11 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     // Any swipe player on screen (allowed or not)
     private var seenViewerPkg: String? = null
     private var viewerFromFeed = false
+    /** A reel opened straight from Instagram's Home (it gets closed again). */
+    private var viewerFromHome = false
+    /** On a Home feed that should stay at the top, whether or not the cover is up yet. */
+    private var homeFeedActive = false
+    private var lastIgHomeAt = 0L
 
     // The single reel/short currently allowed to play
     private var viewerPkg: String? = null
@@ -184,7 +189,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
-                if (homeCover.isShowing) keepHomeAtTop(pkg, event, now)
+                if (homeCover.isShowing || homeFeedActive) keepHomeAtTop(pkg, event, now)
                 onScrolled(pkg, event, now)
                 if (now - lastBackAt >= BACK_COOLDOWN_MS && patchMode) throttledCheck(pkg, now, interval)
             }
@@ -248,10 +253,12 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             if (seenViewerPkg != pkg) {
                 seenViewerPkg = pkg
                 viewerFromFeed = isIg && igFeedReels && now - lastPatchedAt < FROM_FEED_WINDOW_MS
+                viewerFromHome = isIg && igHomeStoriesOnly && now - lastIgHomeAt < FROM_FEED_WINDOW_MS
             }
         } else if (seenViewerPkg == pkg) {
             seenViewerPkg = null
             viewerFromFeed = false
+            viewerFromHome = false
         }
 
         if (debug) dump(root, pkg, viewer, onFeedTab, onExplore, onHome, now)
@@ -295,6 +302,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val name = if (isIg) "Reels" else "Shorts"
         var exploreCovered = false
         var homeCovered = false
+        homeFeedActive = false
         when {
             igExplore && onExplore -> {
                 clearPatches()
@@ -303,6 +311,13 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             featureOn(pkg) && onFeedTab -> {
                 clearPatches()
                 restrict(name, mute = true, barTop, screenW, screenH, now)
+            }
+            featureOn(pkg) && viewer && viewerFromHome -> {
+                // A reel tapped on Home: close it and go back to the stories.
+                clearPatches()
+                hideBlur()
+                block("Reels are hidden on Home", now)
+                viewerFromHome = false
             }
             featureOn(pkg) && viewer && (!allowShared || viewerFromFeed) -> {
                 clearPatches()
@@ -329,6 +344,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 if (isIg && igHomeStoriesOnly && onHome && !viewer &&
                     hasAnyId(root, Targets.instagram.homeActionBarIds)
                 ) {
+                    homeFeedActive = true
+                    lastIgHomeAt = now
                     val top = homeCoverTop(root, screenH)
                     val bottom = barTop ?: screenH
                     if (bottom - top > 0) {
@@ -341,6 +358,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 if (!isIg && ytHome && !viewer &&
                     isTabSelected(root, tabBars, emptyList(), "Home")
                 ) {
+                    homeFeedActive = true
                     var top = ytHeaderBottom(root, screenW, screenH)
                     if (top != null) {
                         ytLastTop = top
