@@ -15,6 +15,16 @@ android {
         versionName = "1.1"
     }
 
+    // One fixed key, so new builds install over the old one without uninstalling.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("scrollblock.keystore")
+            storePassword = "scrollblock"
+            keyAlias = "scrollblock"
+            keyPassword = "scrollblock"
+        }
+    }
+
     buildTypes {
         release { isMinifyEnabled = false }
     }
