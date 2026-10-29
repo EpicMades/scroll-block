@@ -1,7 +1,9 @@
 package com.kody.scrollblock
 
 import android.accessibilityservice.AccessibilityService
+import android.content.Intent
 import android.content.SharedPreferences
+import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
@@ -15,13 +17,15 @@ import kotlin.math.abs
  * system never wakes this service for any other app).
  *
  * Rules:
- *  - Reels tab / Shorts tab / Explore tab  -> pressed Back immediately.
- *  - A single reel or short opened from a DM, link or post -> allowed to play.
+ *  - Reels tab / Shorts tab / Explore tab -> blurred + muted (or sent Back, if Blur mode is off).
+ *  - A single reel or short opened from a DM, link or post -> plays normally.
  *  - Swiping to the next reel/short -> pressed Back (returns you to where you came from).
+ *  - The home feed and everything else -> untouched.
  */
 class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPreferenceChangeListener {
 
     private lateinit var prefs: SharedPreferences
+    private lateinit var overlay: ReelOverlay
     private val handler = Handler(Looper.getMainLooper())
 
     private var enabled = true
@@ -29,6 +33,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var igExplore = true
     private var ytShorts = true
     private var allowShared = true
+    private var blurMode = true
     private var debug = false
 
     private var lastBackAt = 0L
@@ -36,6 +41,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var lastDumpAt = 0L
     private var lastToastAt = 0L
     private var pendingPkg: String? = null
+    private var lastOverlayMsg: String? = null
 
     // State of the single reel/short currently allowed on screen
     private var viewerPkg: String? = null
@@ -49,14 +55,35 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         checkScreen(pkg, SystemClock.uptimeMillis())
     }
 
+    /** While the blur is up, keep checking so it disappears the moment you leave. */
+    private val overlayWatch = object : Runnable {
+        override fun run() {
+            if (!overlay.isShowing) return
+            val pkg = rootInActiveWindow?.packageName?.toString()
+            if (pkg == null || Targets.forPackage(pkg) == null) {
+                hideOverlay()
+                return
+            }
+            checkScreen(pkg, SystemClock.uptimeMillis())
+            if (overlay.isShowing) handler.postDelayed(this, WATCH_INTERVAL_MS)
+        }
+    }
+
     override fun onServiceConnected() {
         prefs = Prefs.get(this)
+        overlay = ReelOverlay(this)
         loadPrefs()
         prefs.registerOnSharedPreferenceChangeListener(this)
     }
 
+    override fun onUnbind(intent: Intent?): Boolean {
+        if (::overlay.isInitialized) hideOverlay()
+        return super.onUnbind(intent)
+    }
+
     override fun onDestroy() {
         handler.removeCallbacksAndMessages(null)
+        if (::overlay.isInitialized) overlay.hide()
         if (::prefs.isInitialized) prefs.unregisterOnSharedPreferenceChangeListener(this)
         super.onDestroy()
     }
@@ -74,6 +101,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         igExplore = prefs.getBoolean(Prefs.IG_EXPLORE, true)
         ytShorts = prefs.getBoolean(Prefs.YT_SHORTS, true)
         allowShared = prefs.getBoolean(Prefs.ALLOW_SHARED, true)
+        blurMode = prefs.getBoolean(Prefs.BLUR_MODE, true)
         debug = prefs.getBoolean(Prefs.DEBUG, false)
 
         // When switched off, ask the system to stop sending events entirely (zero battery cost).
@@ -84,6 +112,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (!enabled) {
             handler.removeCallbacks(trailingCheck)
             viewerPkg = null
+            hideOverlay()
         }
     }
 
@@ -117,33 +146,66 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val root = rootInActiveWindow ?: return
         if (root.packageName?.toString() != pkg) return
 
+        val tabBars = t.tabBarIds.flatMap { root.findAccessibilityNodeInfosByViewId(it) }
         val viewer = hasAnyId(root, t.viewerIds)
-        val onFeedTab = isTabSelected(root, t.feedTabIds, t.feedTabLabel)
+        // The feed tab only counts when the swipe player is actually on screen.
+        val onFeedTab = viewer && isTabSelected(root, tabBars, t.feedTabIds, t.feedTabLabel)
         val onExplore = pkg == Targets.IG &&
-            isTabSelected(root, t.exploreTabIds, t.exploreTabLabel)
+            isTabSelected(root, tabBars, t.exploreTabIds, t.exploreTabLabel)
 
         if (debug) dump(root, pkg, viewer, onFeedTab, onExplore, now)
 
-        if (igExplore && onExplore) { block("Explore is blocked", now); return }
-        if (featureOn(pkg) && onFeedTab) {
-            block(if (pkg == Targets.IG) "Reels feed is blocked" else "Shorts feed is blocked", now)
-            return
-        }
-        if (featureOn(pkg) && viewer && !allowShared) {
-            block(if (pkg == Targets.IG) "Reels are blocked" else "Shorts are blocked", now)
-            return
-        }
-
-        if (viewer) {
-            if (viewerPkg != pkg) {
-                viewerPkg = pkg
-                viewerStartIndex = -1
-                viewerStartScrollY = Int.MIN_VALUE
-                viewerOpenedAt = now
+        val name = if (pkg == Targets.IG) "Reels" else "Shorts"
+        when {
+            igExplore && onExplore -> restrict("Explore", mute = false, tabBars, now)
+            featureOn(pkg) && onFeedTab -> restrict(name, mute = true, tabBars, now)
+            featureOn(pkg) && viewer && !allowShared -> restrict(name, mute = true, tabBars, now)
+            else -> {
+                hideOverlay()
+                if (viewer) {
+                    if (viewerPkg != pkg) {
+                        viewerPkg = pkg
+                        viewerStartIndex = -1
+                        viewerStartScrollY = Int.MIN_VALUE
+                        viewerOpenedAt = now
+                    }
+                } else if (viewerPkg == pkg) {
+                    viewerPkg = null
+                }
             }
-        } else if (viewerPkg == pkg) {
-            viewerPkg = null
         }
+    }
+
+    private fun restrict(what: String, mute: Boolean, tabBars: List<AccessibilityNodeInfo>, now: Long) {
+        viewerPkg = null
+        if (!blurMode) {
+            block("$what is blocked", now)
+            return
+        }
+        // Cover everything above the bottom tab bar, so the tabs stay usable.
+        val screenH = resources.displayMetrics.heightPixels
+        var bottom = (screenH * 0.88f).toInt()
+        tabBars.firstOrNull()?.let { bar ->
+            val r = Rect()
+            bar.getBoundsInScreen(r)
+            if (r.top in (screenH / 2)..screenH) bottom = r.top
+        }
+        val msg = "$what hidden by Scroll Block\nTap a tab below to leave"
+        val wasShowing = overlay.isShowing
+        overlay.show(bottom, msg, mute)
+        if (!wasShowing || lastOverlayMsg != msg) {
+            lastOverlayMsg = msg
+            handler.removeCallbacks(overlayWatch)
+            handler.postDelayed(overlayWatch, WATCH_INTERVAL_MS)
+            if (!wasShowing) countBlock()
+        }
+    }
+
+    private fun hideOverlay() {
+        if (!::overlay.isInitialized) return
+        handler.removeCallbacks(overlayWatch)
+        lastOverlayMsg = null
+        overlay.hide()
     }
 
     private fun onScrolled(pkg: String, e: AccessibilityEvent, now: Long) {
@@ -179,12 +241,17 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         viewerPkg = null
         handler.removeCallbacks(trailingCheck)
         pendingPkg = null
+        hideOverlay()
         performGlobalAction(GLOBAL_ACTION_BACK)
-        prefs.edit().putInt(Prefs.BLOCK_COUNT, prefs.getInt(Prefs.BLOCK_COUNT, 0) + 1).apply()
+        countBlock()
         if (now - lastToastAt > 2500) {
             lastToastAt = now
             Toast.makeText(applicationContext, msg, Toast.LENGTH_SHORT).show()
         }
+    }
+
+    private fun countBlock() {
+        prefs.edit().putInt(Prefs.BLOCK_COUNT, prefs.getInt(Prefs.BLOCK_COUNT, 0) + 1).apply()
     }
 
     // ---- node helpers ----
@@ -192,25 +259,36 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private fun hasAnyId(root: AccessibilityNodeInfo, ids: Collection<String>): Boolean =
         ids.any { root.findAccessibilityNodeInfosByViewId(it).isNotEmpty() }
 
-    private fun isTabSelected(root: AccessibilityNodeInfo, ids: List<String>, label: String?): Boolean {
+    /**
+     * A tab counts as open only if its own node is selected. Text labels are only
+     * matched inside the bottom tab bar, so a "Reels"/"Shorts" heading in the home
+     * feed can never trigger a block.
+     */
+    private fun isTabSelected(
+        root: AccessibilityNodeInfo,
+        tabBars: List<AccessibilityNodeInfo>,
+        ids: List<String>,
+        label: String?,
+    ): Boolean {
         for (id in ids) {
             for (n in root.findAccessibilityNodeInfosByViewId(id)) {
-                if (isSelectedish(n)) return true
+                if (n.isSelected) return true
             }
         }
         if (label != null) {
-            for (n in root.findAccessibilityNodeInfosByText(label)) {
-                val desc = n.contentDescription?.toString()
-                val text = n.text?.toString()
-                val exact = desc.equals(label, true) || text.equals(label, true)
-                if (exact && isSelectedish(n)) return true
+            for (bar in tabBars) {
+                for (n in bar.findAccessibilityNodeInfosByText(label)) {
+                    val desc = n.contentDescription?.toString()
+                    val text = n.text?.toString()
+                    if (!desc.equals(label, true) && !text.equals(label, true)) continue
+                    if (n.isSelected) return true
+                    val parent = n.parent
+                    if (parent != null && parent != bar && parent.isSelected) return true
+                }
             }
         }
         return false
     }
-
-    private fun isSelectedish(n: AccessibilityNodeInfo): Boolean =
-        n.isSelected || n.parent?.isSelected == true
 
     // ---- debug capture (only runs when Debug is switched on) ----
 
@@ -248,6 +326,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     companion object {
         private const val BACK_COOLDOWN_MS = 700L
         private const val CHECK_INTERVAL_MS = 400L
+        private const val WATCH_INTERVAL_MS = 700L
         private const val EVENT_MASK = AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
             AccessibilityEvent.TYPE_WINDOW_CONTENT_CHANGED or
             AccessibilityEvent.TYPE_VIEW_SCROLLED

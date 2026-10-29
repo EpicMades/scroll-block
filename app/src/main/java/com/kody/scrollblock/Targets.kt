@@ -19,6 +19,8 @@ object Targets {
         /** Instagram's Explore tab (YouTube has none we block). */
         val exploreTabIds: List<String> = emptyList(),
         val exploreTabLabel: String? = null,
+        /** The bottom navigation bar. Tab labels are only matched inside it. */
+        val tabBarIds: List<String> = emptyList(),
     )
 
     val instagram = AppTargets(
@@ -31,6 +33,7 @@ object Targets {
         feedTabLabel = "Reels",
         exploreTabIds = listOf("$IG:id/search_tab"),
         exploreTabLabel = "Search and explore",
+        tabBarIds = listOf("$IG:id/tab_bar"),
     )
 
     val youtube = AppTargets(
@@ -41,6 +44,7 @@ object Targets {
         ),
         feedTabIds = emptyList(),
         feedTabLabel = "Shorts",
+        tabBarIds = listOf("$YT:id/pivot_bar"),
     )
 
     fun forPackage(pkg: String): AppTargets? = when (pkg) {

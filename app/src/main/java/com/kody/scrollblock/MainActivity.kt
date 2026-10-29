@@ -85,6 +85,9 @@ class MainActivity : Activity() {
         toggle(Prefs.YT_SHORTS, "YouTube Shorts feed + shorts scrolling", true)
         toggle(Prefs.ALLOW_SHARED, "Allow a single reel/short opened from a DM or link", true)
 
+        section("HOW TO BLOCK FEEDS")
+        toggle(Prefs.BLUR_MODE, "Blur & mute Reels/Shorts/Explore (off = send me back)", true)
+
         count = TextView(this).apply { textSize = 14f; setPadding(0, dp(16), 0, 0) }
         col.addView(count)
 
