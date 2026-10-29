@@ -59,6 +59,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     /** True while the Instagram home feed or Explore is on screen (patches follow scrolling). */
     private var patchMode = false
+    private var screenRect = Rect()
     private var lastPatchedAt = 0L
     private var lastFullCheckAt = 0L
     private var patchClipBottom = Int.MAX_VALUE
@@ -175,6 +176,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val root = rootInActiveWindow ?: return false
         if (root.packageName?.toString() != pkg) return false
         lastCheckAt = now
+        screenRect = screenBounds()
         val rects = findReelRects(root, resources.displayMetrics.widthPixels, patchClipBottom)
         patches.show(rects)
         muter.set("patch", rects.isNotEmpty())
@@ -203,6 +205,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (root.packageName?.toString() != pkg) return
 
         val screen = screenBounds()
+        screenRect = screen
         val screenW = screen.width()
         val screenH = screen.height()
         val tabBars = t.tabBarIds.flatMap { root.findAccessibilityNodeInfosByViewId(it) }
@@ -346,12 +349,10 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     private fun findSearchBar(root: AccessibilityNodeInfo, screenH: Int): AccessibilityNodeInfo? {
         for (id in Targets.instagram.searchBarIds) {
-            root.findAccessibilityNodeInfosByViewId(id).firstOrNull { it.isVisibleToUser }?.let { return it }
+            root.findAccessibilityNodeInfosByViewId(id).firstOrNull { onScreen(it) != null }?.let { return it }
         }
         return root.findAccessibilityNodeInfosByText("Search").firstOrNull { n ->
-            if (!n.isVisibleToUser) return@firstOrNull false
-            val r = Rect()
-            n.getBoundsInScreen(r)
+            val r = onScreen(n) ?: return@firstOrNull false
             r.top < screenH / 4 && (n.isEditable || n.isClickable ||
                 n.className?.toString()?.contains("EditText") == true)
         }
@@ -444,16 +445,27 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             for (n in root.findAccessibilityNodeInfosByText(word)) {
                 val desc = n.contentDescription?.toString() ?: continue
                 if (!desc.startsWith(word, ignoreCase = true)) continue
-                if (!n.isVisibleToUser) continue
-                val r = Rect()
-                n.getBoundsInScreen(r)
-                // Skip small icons/labels; reels are big tiles or full-width posts.
-                if (r.width() < screenW / 4 || r.height() < screenW / 5) continue
+                val r = onScreen(n) ?: continue
+                // Skip small icons/labels. Full-width feed posts count even when only a
+                // sliver is on screen; grid tiles must be a decent size.
+                val fullWidth = r.width() >= screenW * 0.9f
+                if (!fullWidth && (r.width() < screenW / 4 || r.height() < screenW / 5)) continue
                 if (r.bottom > clipBottom) r.bottom = clipBottom
-                if (r.top < 0) r.top = 0
                 if (r.height() <= 0) continue
                 found.add(r)
             }
+        }
+        // The "Suggested reels" row in the home feed: cover its title and the whole row.
+        var row: Rect? = null
+        for (id in Targets.instagram.feedReelRowIds) {
+            for (n in root.findAccessibilityNodeInfosByViewId(id)) {
+                val r = onScreen(n) ?: continue
+                row = row?.apply { union(r) } ?: Rect(r)
+            }
+        }
+        row?.let { r ->
+            if (r.bottom > clipBottom) r.bottom = clipBottom
+            if (r.height() > 0) found.add(r)
         }
         // Drop duplicates and patches fully inside another patch.
         return found.distinct().filter { a ->
@@ -511,8 +523,22 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     // ---- node helpers ----
 
+    /**
+     * Instagram keeps every tab loaded side by side, off screen. Only nodes that are
+     * actually on the display count; returns their on-screen bounds, or null.
+     */
+    private fun onScreen(n: AccessibilityNodeInfo): Rect? {
+        if (!n.isVisibleToUser) return null
+        val r = Rect()
+        n.getBoundsInScreen(r)
+        if (r.width() <= 0 || r.height() <= 0) return null
+        if (screenRect.isEmpty) screenRect = screenBounds()
+        if (!r.intersect(screenRect)) return null
+        return r
+    }
+
     private fun hasAnyId(root: AccessibilityNodeInfo, ids: Collection<String>): Boolean =
-        ids.any { root.findAccessibilityNodeInfosByViewId(it).isNotEmpty() }
+        ids.any { id -> root.findAccessibilityNodeInfosByViewId(id).any { onScreen(it) != null } }
 
     private fun tabBarTop(tabBars: List<AccessibilityNodeInfo>, screenH: Int): Int? {
         for (bar in tabBars) {
