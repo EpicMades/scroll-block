@@ -11,6 +11,7 @@ object Prefs {
     const val IG_FEED_REELS = "ig_feed_reels"
     const val IG_EXPLORE = "ig_explore_full"
     const val IG_EXPLORE_GRID = "ig_explore_grid"
+    const val IG_HOME_STORIES_ONLY = "ig_home_stories_only"
     const val YT_SHORTS = "yt_shorts"
     const val ALLOW_SHARED = "allow_shared"
     const val BLUR_MODE = "blur_mode"
@@ -20,7 +21,7 @@ object Prefs {
 
     /** Default value for each on/off setting. */
     fun default(key: String): Boolean = when (key) {
-        IG_EXPLORE_GRID, DEBUG -> false
+        IG_EXPLORE_GRID, IG_FEED_REELS, DEBUG -> false
         else -> true
     }
 

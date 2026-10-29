@@ -64,8 +64,8 @@ class CustomTabBar(
         tabs = tabKinds
         selected = sel
         if (waiting) return
-        val cached = prefs.getInt(colorKey(), 0)
-        if (cached != 0) add(cached) else sampleThenAdd(r)
+        // Read Instagram's real bar color fresh every time our bar appears.
+        sampleThenAdd(r)
     }
 
     fun hide() {
@@ -80,7 +80,9 @@ class CustomTabBar(
     private fun night() = (service.resources.configuration.uiMode and
         Configuration.UI_MODE_NIGHT_MASK) == Configuration.UI_MODE_NIGHT_YES
 
-    private fun colorKey() = if (night()) "bar_color_night" else "bar_color_day"
+    private fun colorKey() = if (night()) "bar_color_night_v2" else "bar_color_day_v2"
+
+    private fun savedOrDefault(): Int = prefs.getInt(colorKey(), 0).takeIf { it != 0 } ?: fallbackColor()
 
     private fun fallbackColor() = if (night()) 0xFF0C1014.toInt() else Color.WHITE
 
@@ -88,8 +90,8 @@ class CustomTabBar(
     private fun sampleThenAdd(r: Rect) {
         val gen = ++generation
         waiting = true
-        handler.postDelayed({ if (gen == generation && waiting) add(fallbackColor()) }, 300)
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) { add(fallbackColor()); return }
+        handler.postDelayed({ if (gen == generation && waiting) add(savedOrDefault()) }, 300)
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) { add(savedOrDefault()); return }
         try {
             service.takeScreenshot(
                 Display.DEFAULT_DISPLAY, service.mainExecutor,
@@ -102,9 +104,7 @@ class CustomTabBar(
                             val soft = hw.copy(Bitmap.Config.ARGB_8888, false)
                             hw.recycle()
                             if (soft != null) {
-                                val x = (r.left + 3).coerceIn(0, soft.width - 1)
-                                val y = r.centerY().coerceIn(0, soft.height - 1)
-                                val c = soft.getPixel(x, y) or 0xFF000000.toInt()
+                                val c = sampleBackground(soft, r)
                                 soft.recycle()
                                 prefs.edit().putInt(colorKey(), c).apply()
                                 if (waiting) add(c) else recolor(c)
@@ -116,12 +116,28 @@ class CustomTabBar(
                     }
 
                     override fun onFailure(errorCode: Int) {
-                        if (gen == generation && waiting) add(fallbackColor())
+                        if (gen == generation && waiting) add(savedOrDefault())
                     }
                 })
         } catch (_: Exception) {
-            add(fallbackColor())
+            add(savedOrDefault())
         }
+    }
+
+    /**
+     * Read many points in the gaps between Instagram's tab icons (low in the bar,
+     * away from the top divider) and use the most common color.
+     */
+    private fun sampleBackground(bmp: Bitmap, r: Rect): Int {
+        val counts = HashMap<Int, Int>()
+        val ys = listOf(0.55f, 0.7f, 0.85f).map { (r.top + r.height() * it).toInt() }
+        val xs = (0..10).map { (r.left + r.width() * (it / 10f)).toInt() }
+        for (y in ys) for (x in xs) {
+            val px = bmp.getPixel(x.coerceIn(0, bmp.width - 1), y.coerceIn(0, bmp.height - 1))
+            val c = px or 0xFF000000.toInt()
+            counts[c] = (counts[c] ?: 0) + 1
+        }
+        return counts.maxByOrNull { it.value }?.key ?: fallbackColor()
     }
 
     private fun add(color: Int) {

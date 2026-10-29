@@ -35,6 +35,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private lateinit var prefs: SharedPreferences
     private lateinit var blur: BlurCover
     private lateinit var exploreCover: BlurCover
+    private lateinit var homeCover: BlurCover
     private lateinit var patches: PatchOverlay
     private lateinit var tabBar: CustomTabBar
     private lateinit var muter: Muter
@@ -45,6 +46,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var igFeedReels = true
     private var igExplore = false
     private var igExploreGrid = true
+    private var igHomeStoriesOnly = true
+    private var lastSnapAt = 0L
     private var ytShorts = true
     private var allowShared = true
     private var blurMode = true
@@ -95,6 +98,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         prefs = Prefs.get(this)
         blur = BlurCover(this, touchable = false)
         exploreCover = BlurCover(this, touchable = true)
+        homeCover = BlurCover(this, touchable = true)
         patches = PatchOverlay(this)
         tabBar = CustomTabBar(this) { kind -> clickTab(kind) }
         muter = Muter(this)
@@ -129,6 +133,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         igFeedReels = pref(Prefs.IG_FEED_REELS)
         igExplore = pref(Prefs.IG_EXPLORE)
         igExploreGrid = pref(Prefs.IG_EXPLORE_GRID)
+        igHomeStoriesOnly = pref(Prefs.IG_HOME_STORIES_ONLY)
         ytShorts = pref(Prefs.YT_SHORTS)
         allowShared = pref(Prefs.ALLOW_SHARED)
         blurMode = pref(Prefs.BLUR_MODE)
@@ -159,6 +164,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
         when (event.eventType) {
             AccessibilityEvent.TYPE_VIEW_SCROLLED -> {
+                if (pkg == Targets.IG && homeCover.isShowing) keepHomeAtTop(event, now)
                 onScrolled(pkg, event, now)
                 if (now - lastBackAt >= BACK_COOLDOWN_MS && patchMode) throttledCheck(pkg, now, interval)
             }
@@ -235,6 +241,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
         val name = if (isIg) "Reels" else "Shorts"
         var exploreCovered = false
+        var homeCovered = false
         when {
             igExplore && onExplore -> {
                 clearPatches()
@@ -265,7 +272,19 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             }
             else -> {
                 hideBlur()
-                val patchable = isIg && igFeedReels && !viewer && (onHome || onExplore)
+                // Home: only the stories row stays visible; the feed below it is covered.
+                if (isIg && igHomeStoriesOnly && onHome && !viewer &&
+                    hasAnyId(root, Targets.instagram.homeActionBarIds)
+                ) {
+                    val top = homeCoverTop(root, screenH)
+                    val bottom = barTop ?: screenH
+                    if (bottom - top > 0) {
+                        if (!homeCover.isShowing) countBlock()
+                        homeCover.show(Rect(0, top, screenW, bottom), "Feed hidden by Scroll Block\nStories only")
+                        homeCovered = true
+                    }
+                }
+                val patchable = !homeCovered && isIg && igFeedReels && !viewer && (onHome || onExplore)
                 patchMode = patchable
                 if (patchable) {
                     patchClipBottom = barTop ?: screenH
@@ -280,6 +299,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
             }
         }
         if (!exploreCovered) exploreCover.hide()
+        if (!homeCovered) homeCover.hide()
         scheduleWatch()
     }
 
@@ -314,7 +334,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     }
 
     private fun anyOverlay() = ::blur.isInitialized &&
-        (blur.isShowing || exploreCover.isShowing || patches.isShowing || tabBar.isShowing)
+        (blur.isShowing || exploreCover.isShowing || homeCover.isShowing || patches.isShowing || tabBar.isShowing)
 
     private fun scheduleWatch() {
         handler.removeCallbacks(overlayWatch)
@@ -341,8 +361,55 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         hideBlur()
         clearPatches()
         exploreCover.hide()
+        homeCover.hide()
         tabBar.hide()
         muter.clear()
+    }
+
+    // ---- Instagram: Home = stories only ----
+
+    /** Where the cover starts: just below the stories row. */
+    private fun homeCoverTop(root: AccessibilityNodeInfo, screenH: Int): Int {
+        val d = resources.displayMetrics.density
+        for (id in Targets.instagram.storiesTrayIds) {
+            for (n in root.findAccessibilityNodeInfosByViewId(id)) {
+                val r = onScreen(n) ?: continue
+                if (r.bottom in 1 until screenH / 2) return r.bottom
+            }
+        }
+        var actionBarBottom = (screenH * 0.08f).toInt()
+        for (id in Targets.instagram.homeActionBarIds) {
+            for (n in root.findAccessibilityNodeInfosByViewId(id)) {
+                onScreen(n)?.let { actionBarBottom = it.bottom }
+            }
+        }
+        val trayGuess = actionBarBottom + (112 * d).toInt()
+        // The first feed item below the action bar marks where the stories row ends.
+        var firstItemTop = Int.MAX_VALUE
+        for (id in Targets.instagram.feedItemIds) {
+            for (n in root.findAccessibilityNodeInfosByViewId(id)) {
+                val r = onScreen(n) ?: continue
+                if (r.top > actionBarBottom + (40 * d) && r.top < firstItemTop) firstItemTop = r.top
+            }
+        }
+        return if (firstItemTop < actionBarBottom + (170 * d)) firstItemTop else trayGuess
+    }
+
+    /** Scrolling the home feed down snaps it straight back to the top (stories). */
+    private fun keepHomeAtTop(e: AccessibilityEvent, now: Long) {
+        if (now - lastSnapAt < 700) return
+        val src = e.source ?: return
+        val r = Rect()
+        src.getBoundsInScreen(r)
+        val screenH = screenRect.height().takeIf { it > 0 } ?: resources.displayMetrics.heightPixels
+        val screenW = screenRect.width().takeIf { it > 0 } ?: resources.displayMetrics.widthPixels
+        // Only the main vertical feed counts; sideways scrolling of the stories row is fine.
+        val mainList = r.width() >= screenW * 0.9f && r.height() >= screenH / 2
+        if (!mainList) return
+        val down = e.scrollDeltaY > 0 || e.fromIndex > 0
+        if (!down) return
+        lastSnapAt = now
+        clickTab("home") // tapping Home while on Home scrolls Instagram back to the top
     }
 
     // ---- Instagram: Explore search bar ----

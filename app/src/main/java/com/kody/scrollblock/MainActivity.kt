@@ -82,7 +82,7 @@ class MainActivity : Activity() {
         section("INSTAGRAM")
         toggle(Prefs.IG_REELS, "Hide the Reels tab + block reel scrolling", true)
         toggle(Prefs.IG_EXPLORE, "Hide the Explore tab", true)
-        toggle(Prefs.IG_FEED_REELS, "Cover & mute reels in the Home feed", true)
+        toggle(Prefs.IG_HOME_STORIES_ONLY, "Home: show stories only (feed hidden, no scrolling)", true)
         toggle(Prefs.IG_EXPLORE_GRID, "If Explore is allowed: cover its grid (search still works)", false)
 
         section("YOUTUBE")

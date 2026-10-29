@@ -26,6 +26,12 @@ object Targets {
         val homeTabLabel: String? = null,
         /** Explore page search bar. */
         val searchBarIds: List<String> = emptyList(),
+        /** Home screen top bar (Instagram logo, likes, messages). */
+        val homeActionBarIds: List<String> = emptyList(),
+        /** The stories row at the top of Home. */
+        val storiesTrayIds: List<String> = emptyList(),
+        /** Posts and units in the home feed, used to find where stories end. */
+        val feedItemIds: List<String> = emptyList(),
     )
 
     /**
@@ -63,6 +69,12 @@ object Targets {
         homeTabIds = listOf("$IG:id/feed_tab"),
         homeTabLabel = "Home",
         searchBarIds = listOf("$IG:id/action_bar_search_edit_text"),
+        homeActionBarIds = listOf("$IG:id/main_feed_action_bar"),
+        storiesTrayIds = listOf("$IG:id/reels_tray_container", "$IG:id/reels_tray", "$IG:id/stories_tray"),
+        feedItemIds = listOf(
+            "$IG:id/row_feed_profile_header", "$IG:id/clips_header_container",
+            "$IG:id/row_feed_photo_imageview", "$IG:id/media_group",
+        ),
     )
 
     val youtube = AppTargets(
