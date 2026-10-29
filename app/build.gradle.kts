@@ -11,8 +11,8 @@ android {
         applicationId = "com.kody.scrollblock"
         minSdk = 29
         targetSdk = 35
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
     }
 
     // One fixed key, so new builds install over the old one without uninstalling.

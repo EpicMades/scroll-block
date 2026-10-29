@@ -24,6 +24,8 @@ object Targets {
         /** Home tab, where reels mixed into the feed get covered. */
         val homeTabIds: List<String> = emptyList(),
         val homeTabLabel: String? = null,
+        /** Explore page search bar. */
+        val searchBarIds: List<String> = emptyList(),
     )
 
     /**
@@ -46,6 +48,7 @@ object Targets {
         tabBarIds = listOf("$IG:id/tab_bar"),
         homeTabIds = listOf("$IG:id/feed_tab"),
         homeTabLabel = "Home",
+        searchBarIds = listOf("$IG:id/action_bar_search_edit_text"),
     )
 
     val youtube = AppTargets(

@@ -4,10 +4,12 @@ import android.accessibilityservice.AccessibilityService
 import android.content.Intent
 import android.content.SharedPreferences
 import android.graphics.Rect
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.view.accessibility.AccessibilityEvent
+import android.view.WindowManager
 import android.view.accessibility.AccessibilityNodeInfo
 import android.widget.Toast
 import kotlin.math.abs
@@ -31,7 +33,8 @@ import kotlin.math.abs
 class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPreferenceChangeListener {
 
     private lateinit var prefs: SharedPreferences
-    private lateinit var blur: ReelOverlay
+    private lateinit var blur: BlurCover
+    private lateinit var exploreCover: BlurCover
     private lateinit var patches: PatchOverlay
     private lateinit var tabCover: TabCover
     private lateinit var muter: Muter
@@ -41,6 +44,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     private var igReels = true
     private var igFeedReels = true
     private var igExplore = false
+    private var igExploreGrid = true
     private var ytShorts = true
     private var allowShared = true
     private var blurMode = true
@@ -88,7 +92,8 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
 
     override fun onServiceConnected() {
         prefs = Prefs.get(this)
-        blur = ReelOverlay(this)
+        blur = BlurCover(this, touchable = false)
+        exploreCover = BlurCover(this, touchable = true)
         patches = PatchOverlay(this)
         tabCover = TabCover(this)
         muter = Muter(this)
@@ -122,6 +127,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         igReels = pref(Prefs.IG_REELS)
         igFeedReels = pref(Prefs.IG_FEED_REELS)
         igExplore = pref(Prefs.IG_EXPLORE)
+        igExploreGrid = pref(Prefs.IG_EXPLORE_GRID)
         ytShorts = pref(Prefs.YT_SHORTS)
         allowShared = pref(Prefs.ALLOW_SHARED)
         blurMode = pref(Prefs.BLUR_MODE)
@@ -196,9 +202,9 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val root = rootInActiveWindow ?: return
         if (root.packageName?.toString() != pkg) return
 
-        val dm = resources.displayMetrics
-        val screenW = dm.widthPixels
-        val screenH = dm.heightPixels
+        val screen = screenBounds()
+        val screenW = screen.width()
+        val screenH = screen.height()
         val tabBars = t.tabBarIds.flatMap { root.findAccessibilityNodeInfosByViewId(it) }
         val barTop = tabBarTop(tabBars, screenH)
         val viewer = hasAnyId(root, t.viewerIds)
@@ -225,18 +231,34 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         if (isIg && igReels) updateTabCover(root, tabBars) else tabCover.hide()
 
         val name = if (isIg) "Reels" else "Shorts"
+        var exploreCovered = false
         when {
             igExplore && onExplore -> {
                 clearPatches()
-                restrict("Explore", mute = false, barTop, screenH, now)
+                restrict("Explore", mute = false, barTop, screenW, screenH, now)
             }
             featureOn(pkg) && onFeedTab -> {
                 clearPatches()
-                restrict(name, mute = true, barTop, screenH, now)
+                restrict(name, mute = true, barTop, screenW, screenH, now)
             }
             featureOn(pkg) && viewer && (!allowShared || viewerFromFeed) -> {
                 clearPatches()
-                restrict(name, mute = true, barTop, screenH, now)
+                restrict(name, mute = true, barTop, screenW, screenH, now)
+            }
+            isIg && igExploreGrid && onExplore && !viewer && !isSearching(root, screenH) -> {
+                // Explore page itself: cover everything between the search bar and the tab bar.
+                clearPatches()
+                hideBlur()
+                val top = searchBarBottom(root, screenH) ?: (screenH * 0.18f).toInt()
+                val bottom = barTop ?: screenH
+                if (bottom - top > 0) {
+                    if (!exploreCover.isShowing) countBlock()
+                    exploreCover.show(
+                        Rect(0, top, screenW, bottom),
+                        "Explore hidden by Scroll Block\nTap the search bar to look something up"
+                    )
+                    exploreCovered = true
+                }
             }
             else -> {
                 hideBlur()
@@ -254,6 +276,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
                 trackAllowedViewer(pkg, viewer, now)
             }
         }
+        if (!exploreCovered) exploreCover.hide()
         scheduleWatch()
     }
 
@@ -270,7 +293,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         }
     }
 
-    private fun restrict(what: String, mute: Boolean, barTop: Int?, screenH: Int, now: Long) {
+    private fun restrict(what: String, mute: Boolean, barTop: Int?, screenW: Int, screenH: Int, now: Long) {
         viewerPkg = null
         if (!blurMode) {
             block("$what is blocked", now)
@@ -279,7 +302,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         val msg = if (barTop != null) "$what hidden by Scroll Block\nTap a tab below to leave"
         else "$what hidden by Scroll Block\nSwipe back to leave"
         val wasShowing = blur.isShowing
-        blur.show(barTop ?: screenH, msg)
+        blur.show(Rect(0, 0, screenW, barTop ?: screenH), msg)
         muter.set("blur", mute)
         if (!wasShowing || lastBlurMsg != msg) {
             lastBlurMsg = msg
@@ -288,7 +311,7 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
     }
 
     private fun anyOverlay() = ::blur.isInitialized &&
-        (blur.isShowing || patches.isShowing || tabCover.isShowing)
+        (blur.isShowing || exploreCover.isShowing || patches.isShowing || tabCover.isShowing)
 
     private fun scheduleWatch() {
         handler.removeCallbacks(overlayWatch)
@@ -314,9 +337,49 @@ class BlockerService : AccessibilityService(), SharedPreferences.OnSharedPrefere
         handler.removeCallbacks(overlayWatch)
         hideBlur()
         clearPatches()
+        exploreCover.hide()
         tabCover.hide()
         muter.clear()
     }
+
+    // ---- Instagram: Explore search bar ----
+
+    private fun findSearchBar(root: AccessibilityNodeInfo, screenH: Int): AccessibilityNodeInfo? {
+        for (id in Targets.instagram.searchBarIds) {
+            root.findAccessibilityNodeInfosByViewId(id).firstOrNull { it.isVisibleToUser }?.let { return it }
+        }
+        return root.findAccessibilityNodeInfosByText("Search").firstOrNull { n ->
+            if (!n.isVisibleToUser) return@firstOrNull false
+            val r = Rect()
+            n.getBoundsInScreen(r)
+            r.top < screenH / 4 && (n.isEditable || n.isClickable ||
+                n.className?.toString()?.contains("EditText") == true)
+        }
+    }
+
+    private fun searchBarBottom(root: AccessibilityNodeInfo, screenH: Int): Int? {
+        val bar = findSearchBar(root, screenH) ?: return null
+        val r = Rect()
+        bar.getBoundsInScreen(r)
+        return if (r.bottom in 1 until screenH / 3) r.bottom + 8 else null
+    }
+
+    /** True once you tap into the search bar or have typed something. */
+    private fun isSearching(root: AccessibilityNodeInfo, screenH: Int): Boolean {
+        val bar = findSearchBar(root, screenH) ?: return false
+        if (bar.isFocused) return true
+        val text = bar.text?.toString()?.trim().orEmpty()
+        if (bar.isShowingHintText || text.isEmpty() || text.equals("Search", true)) return false
+        return true
+    }
+
+    private fun screenBounds(): Rect =
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            getSystemService(WindowManager::class.java).currentWindowMetrics.bounds
+        } else {
+            val dm = resources.displayMetrics
+            Rect(0, 0, dm.widthPixels, dm.heightPixels)
+        }
 
     // ---- Instagram: Reels button and feed reels ----
 

@@ -10,6 +10,7 @@ object Prefs {
     const val IG_REELS = "ig_reels"
     const val IG_FEED_REELS = "ig_feed_reels"
     const val IG_EXPLORE = "ig_explore_full"
+    const val IG_EXPLORE_GRID = "ig_explore_grid"
     const val YT_SHORTS = "yt_shorts"
     const val ALLOW_SHARED = "allow_shared"
     const val BLUR_MODE = "blur_mode"
